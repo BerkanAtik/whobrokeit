@@ -1,0 +1,110 @@
+name: whobrokeit
+description: Find the commit that broke it, prove it, and reply on the issue with the culprit and a tested fix.
+author: Berkan Atik
+branding:
+  icon: git-commit
+  color: red
+
+inputs:
+  anthropic-api-key:
+    description: Anthropic API key for Claude Code. Give this or claude-code-oauth-token.
+    required: false
+  claude-code-oauth-token:
+    description: Claude Code OAuth token (from `claude setup-token`), to use a Claude subscription instead of an API key.
+    required: false
+  bug:
+    description: >-
+      What is broken, in plain words. Default: the text after `/whobrokeit` in the comment that
+      triggered the run, else the issue's title and body.
+    required: false
+  test:
+    description: A command that fails while the bug is present. When set, no test is written by AI.
+    required: false
+  explain:
+    description: >-
+      Explain the culprit and test a fix: `auto` does when the bug is described in words, `true`
+      also with `test`, `false` never.
+    required: false
+    default: auto
+  agent:
+    description: Who writes the test and the explanation, `claude` or `codex`, or a command (see the README).
+    required: false
+    default: claude
+  model:
+    description: Model for the agent, e.g. `sonnet`.
+    required: false
+  good:
+    description: 'A commit where it still worked. Default: found automatically.'
+    required: false
+  bad:
+    description: 'A commit where it is broken. Default: the checked-out commit.'
+    required: false
+  setup:
+    description: 'Install command, or `none`. Default: auto (npm/pnpm/yarn/bun).'
+    required: false
+  timeout:
+    description: Time limit in seconds for each test run.
+    required: false
+  working-directory:
+    description: The repository to search, if it is not the workspace root.
+    required: false
+    default: .
+  comment:
+    description: Post the result as a comment on the issue.
+    required: false
+    default: 'true'
+  github-token:
+    description: 'Token used to comment. Needs `issues: write`.'
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  exit-code:
+    description: 0 found and proven, 1 error, 2 bug not reproduced, 3 no working commit found, 4 inconclusive.
+    value: ${{ steps.run.outputs.exit-code }}
+  commit:
+    description: The short hash of the commit that broke it, if one was found.
+    value: ${{ steps.run.outputs.commit }}
+  report:
+    description: Path to the Markdown report.
+    value: ${{ steps.run.outputs.report }}
+
+runs:
+  using: composite
+  steps:
+    - name: Build whobrokeit
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: npm ci --no-audit --no-fund --loglevel=error && npm run build --silent
+
+    - name: Install Claude Code
+      if: inputs.agent == 'claude' && (inputs.test == '' && inputs.explain != 'false' || inputs.explain == 'true')
+      shell: bash
+      run: command -v claude >/dev/null || npm install -g --no-audit --no-fund --loglevel=error @anthropic-ai/claude-code
+
+    - name: Install Codex
+      if: inputs.agent == 'codex' && (inputs.test == '' && inputs.explain != 'false' || inputs.explain == 'true')
+      shell: bash
+      run: command -v codex >/dev/null || npm install -g --no-audit --no-fund --loglevel=error @openai/codex
+
+    - name: Find the commit that broke it
+      id: run
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      # Inputs reach the script through the environment, never pasted into the shell: issue
+      # text is written by strangers.
+      env:
+        WBI_ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
+        WBI_CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.claude-code-oauth-token }}
+        WBI_BUG: ${{ inputs.bug }}
+        WBI_TEST: ${{ inputs.test }}
+        WBI_EXPLAIN: ${{ inputs.explain }}
+        WBI_AGENT: ${{ inputs.agent }}
+        WBI_MODEL: ${{ inputs.model }}
+        WBI_GOOD: ${{ inputs.good }}
+        WBI_BAD: ${{ inputs.bad }}
+        WBI_SETUP: ${{ inputs.setup }}
+        WBI_TIMEOUT: ${{ inputs.timeout }}
+        WBI_COMMENT: ${{ inputs.comment }}
+        WBI_GITHUB_TOKEN: ${{ inputs.github-token }}
+      run: node "$GITHUB_ACTION_PATH/action/run.mjs"

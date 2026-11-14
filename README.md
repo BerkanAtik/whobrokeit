@@ -35,6 +35,64 @@ whobrokeit --test "node repro.mjs" --with repro.mjs   # a test you haven't commi
 
 Any command works. Exit code 0 means it works, 125 means this commit can't be tested (skip it), anything else means broken. Add `--explain` to get the explanation and a fix in this mode too.
 
+## On GitHub issues
+
+whobrokeit can also run as a GitHub Action. When you label an issue `whobrokeit`, or comment `/whobrokeit`, it looks for the commit that broke it and replies on the issue with the culprit, the proof and a fix it has tested.
+
+Add an `ANTHROPIC_API_KEY` secret to the repo, then save this as `.github/workflows/whobrokeit.yml`:
+
+```yaml
+name: whobrokeit
+
+on:
+  issues:
+    types: [labeled]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  whobrokeit:
+    # Only people who can label issues, or members and collaborators who comment /whobrokeit.
+    if: >-
+      (github.event_name == 'issues' && github.event.label.name == 'whobrokeit') ||
+      (github.event_name == 'issue_comment' && !github.event.issue.pull_request &&
+       startsWith(github.event.comment.body, '/whobrokeit') &&
+       contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association))
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0               # whobrokeit needs the history
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22             # whatever your project uses
+      - uses: BerkanAtik/whobrokeit@v0
+        with:
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+```
+
+By default it works from the issue's title and body. Text after `/whobrokeit` replaces them, so you can put the bug more precisely: `/whobrokeit Adding 3 mugs costs the same as 1 mug.`
+
+| Input | |
+|---|---|
+| `anthropic-api-key` | Anthropic API key. Or `claude-code-oauth-token`, made with `claude setup-token`, to use a Claude subscription. |
+| `bug` | What is broken. Default: the comment text after `/whobrokeit`, else the issue. |
+| `test` | Your own failing test command. No AI writes the test then. |
+| `explain` | `auto` (default), `true` or `false`. |
+| `agent`, `model`, `good`, `bad`, `setup`, `timeout` | As on the command line. `setup: none` turns installs off. |
+| `working-directory` | The repository to search, if it is not the workspace root. |
+| `comment` | Set to `false` to skip the issue comment. The report is in the job summary either way. |
+
+Outputs: `exit-code`, `commit` (short hash of the culprit) and `report` (path to the Markdown report). The job fails only on errors. A bug it could not reproduce is reported on the issue like any other result.
+
+Read an issue before you start a run on it. The agent only reads code, but whobrokeit runs the test it writes, and issue text can try to steer the agent. The tests whobrokeit runs never get the AI key or the GitHub token in their environment, and the token can't change anything but comments. Code on the runner runs as the same user, though, so use an API key with a spending limit.
+
 ## What it does
 
 1. **Reproduce.** The agent reads your code and writes a small script that prints a `WHOBROKEIT_BUG:` line when it sees the bug. whobrokeit runs it at `HEAD` and only goes on if it fails there for that reason. A crash without that line counts as "can't tell", so a test that calls a function older commits don't have never blames the wrong commit.

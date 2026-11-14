@@ -35,6 +35,64 @@ whobrokeit --test "node repro.mjs" --with repro.mjs   # henüz commit'lemediğin
 
 Her komut olur. Çıkış kodu 0 çalışıyor, 125 bu commit test edilemiyor (atla), diğer her şey bozuk demektir. Bu modda da açıklama ve düzeltme istersen `--explain` ekle.
 
+## GitHub issue'larında
+
+whobrokeit bir GitHub Action olarak da çalışır. Bir issue'ya `whobrokeit` etiketini koyduğunda ya da `/whobrokeit` yorumunu yazdığında hatayı getiren commit'i arar. Sonra issue'ya bir yorum yazar: suçlu commit, kanıtı ve test edilmiş bir düzeltme.
+
+Repoya `ANTHROPIC_API_KEY` adında bir secret ekle, sonra şunu `.github/workflows/whobrokeit.yml` olarak kaydet:
+
+```yaml
+name: whobrokeit
+
+on:
+  issues:
+    types: [labeled]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  whobrokeit:
+    # Yalnız issue etiketleyebilenler ya da /whobrokeit yazan üyeler ve katkıcılar.
+    if: >-
+      (github.event_name == 'issues' && github.event.label.name == 'whobrokeit') ||
+      (github.event_name == 'issue_comment' && !github.event.issue.pull_request &&
+       startsWith(github.event.comment.body, '/whobrokeit') &&
+       contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association))
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0               # whobrokeit geçmişe ihtiyaç duyar
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22             # projen hangisini kullanıyorsa
+      - uses: BerkanAtik/whobrokeit@v0
+        with:
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+```
+
+Varsayılan olarak issue'nun başlığı ve metniyle çalışır. `/whobrokeit`'ten sonra bir metin yazarsan onların yerine o kullanılır. Böylece hatayı daha net anlatabilirsin: `/whobrokeit Sepete 3 kupa ekleyince fiyat 1 kupa kadar çıkıyor.`
+
+| Girdi | |
+|---|---|
+| `anthropic-api-key` | Anthropic API anahtarı. Claude aboneliğini kullanmak için onun yerine `claude setup-token` ile alınan `claude-code-oauth-token`. |
+| `bug` | Bozuk olan şey. Varsayılan: yorumda `/whobrokeit`'ten sonraki metin, o da yoksa issue. |
+| `test` | Başarısız olan kendi test komutun. O zaman testi yapay zekâ yazmaz. |
+| `explain` | `auto` (varsayılan), `true` ya da `false`. |
+| `agent`, `model`, `good`, `bad`, `setup`, `timeout` | Komut satırındakiyle aynı. `setup: none` kurulumu kapatır. |
+| `working-directory` | Aranacak repo, çalışma alanının kökü değilse. |
+| `comment` | Issue'ya yorum yazmasın istersen `false`. Rapor her durumda job özetinde de olur. |
+
+Çıktılar: `exit-code`, `commit` (suçlu commit'in kısa hash'i) ve `report` (Markdown raporun yolu). Job yalnız bir hata olursa başarısız olur. Yeniden üretilemeyen bir hata da diğer sonuçlar gibi issue'ya yazılır.
+
+Bir issue'da çalıştırmadan önce issue'yu oku. Ajan yalnız kodu okur, ama yazdığı testi whobrokeit çalıştırır, ve issue metni ajanı yönlendirmeye çalışabilir. whobrokeit'in çalıştırdığı testlerin ortamında AI anahtarı da GitHub token'ı da olmaz, token da yorumlar dışında hiçbir şeyi değiştiremez. Yine de runner'daki kod aynı kullanıcıyla çalışır; harcama sınırı olan bir API anahtarı kullan.
+
 ## Ne yapar
 
 1. **Hatayı yeniden üretir.** Ajan kodu okur ve hatayı görünce `WHOBROKEIT_BUG:` satırı basan küçük bir betik yazar. whobrokeit onu `HEAD`'de çalıştırır, yalnız bu sebeple başarısız olursa devam eder. Bu satır olmadan gelen bir çökme "belli değil" sayılır; eski commit'lerde olmayan bir fonksiyonu çağıran test yüzünden yanlış commit suçlanmaz.
