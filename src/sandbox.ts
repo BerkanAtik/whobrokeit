@@ -104,7 +104,12 @@ export class Sandbox {
 
   /** Back to the pristine commit. Ignored files (like node_modules) survive. */
   async clean(): Promise<void> {
-    for (const overlay of this.overlays) await rm(join(this.dir, overlay.path), { force: true });
+    for (const overlay of this.overlays) {
+      // ENOTDIR on Linux and macOS: a folder on its path is a file here, so it was never written.
+      await rm(join(this.dir, overlay.path), { force: true }).catch((err: NodeJS.ErrnoException) => {
+        if (err.code !== 'ENOTDIR') throw err;
+      });
+    }
     await git(['reset', '-q', '--hard'], this.dir);
     await git(['clean', '-fdq'], this.dir);
   }
