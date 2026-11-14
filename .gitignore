@@ -5,3 +5,6 @@ dist/
 # Private planning notes (Turkish), not part of the project
 BASLANGIC.md
 .claude/
+
+# Local dev tools (demo recording)
+.dev/
