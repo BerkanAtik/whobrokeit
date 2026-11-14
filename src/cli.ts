@@ -85,9 +85,10 @@ function exitCode(outcome: Outcome): number {
 }
 
 async function main(argv: string[]): Promise<number> {
-  const { values, positionals } = parseArgs({
+  const { values, positionals, tokens } = parseArgs({
     args: argv,
     allowPositionals: true,
+    tokens: true,
     options: {
       test: { type: 'string', short: 't' },
       with: { type: 'string', short: 'w', multiple: true },
@@ -123,7 +124,9 @@ async function main(argv: string[]): Promise<number> {
   let bug = positionals.join(' ').trim() || undefined;
   let withFiles = values.with ?? [];
 
-  if (positionals[0] === 'demo') {
+  // After `--` everything is the bug description, even a bug called "demo".
+  const first = tokens.find((token) => token.kind !== 'option');
+  if (first?.kind === 'positional' && first.value === 'demo') {
     const dir = positionals[1] ? resolve(positionals[1]) : await mkdtemp(join(tmpdir(), 'whobrokeit-demo-'));
     await createDemoRepo(dir);
     process.stderr.write(

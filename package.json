@@ -1,6 +1,6 @@
 {
   "name": "whobrokeit",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Find the commit that broke it, and prove it.",
   "type": "module",
   "bin": {

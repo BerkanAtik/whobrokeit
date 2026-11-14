@@ -528,8 +528,11 @@ async function resolveRepoRoot(cwd: string): Promise<string> {
 }
 
 async function resolveCommit(repoRoot: string, input: string, flag: string): Promise<string> {
-  const result = await gitRaw(['rev-parse', '--verify', '--quiet', `${input}^{commit}`], repoRoot);
-  if (result.code !== 0) throw new UserError(`${flag} ${input} is not a commit in this repository.`);
+  // No ref starts with a dash; git would read one as an option.
+  const result = input.startsWith('-')
+    ? undefined
+    : await gitRaw(['rev-parse', '--verify', '--quiet', `${input}^{commit}`], repoRoot);
+  if (result?.code !== 0) throw new UserError(`${flag} ${input} is not a commit in this repository.`);
   return result.stdout.trim();
 }
 

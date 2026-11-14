@@ -42,7 +42,7 @@ The first full run scored 8 of 12. Three of the four misses were bugs in whobrok
 
 After these fixes all 12 cases were run again from scratch, which gives the table above. So the 11 of 12 is measured on the same cases that exposed the bugs; read it as "what the tool does now on these cases", not as a blind score.
 
-- **fastify (still a miss):** the bug depends on the version of a dependency (`find-my-way`), and fastify commits no lockfile. Today's `npm install` gives old commits a newer `find-my-way` than they had at the time, so history looks broken much earlier than it really was. whobrokeit proved a commit that is the first failing one with today's dependencies, but it is not the commit that caused the report. Without a lockfile, old dependency versions can't be restored.
+- **fastify (still a miss):** the bug depends on the version of a dependency (`find-my-way`), and fastify commits no lockfile. Today's `npm install` gives old commits a newer `find-my-way` than they had at the time, so history looks broken much earlier than it really was. whobrokeit proved a commit that is the first failing one with today's dependencies, but it is not the commit that caused the report. Installing each commit with the packages published by its own date (`npm install --before`) doesn't fix it: the real culprit, `797f27d`, raised the minimum `find-my-way` to 7.7.0, which had come out two days earlier, so its parent gets 7.7.0 too and fails. The parent passes with an older 7.6.x. Only installing the lowest version each range allows would match what the maintainers saw, and npm has no option for that.
 
 ## Run it yourself
 

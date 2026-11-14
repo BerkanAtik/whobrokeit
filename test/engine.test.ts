@@ -3,6 +3,7 @@ import { mkdtemp, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { DEMO_REPRO, DEMO_TEST, createDemoRepo } from '../src/demo.js';
 import { findCulprit } from '../src/engine.js';
 import { runCommand } from '../src/exec.js';
@@ -68,6 +69,22 @@ test('says so when nothing in history works', async () => {
 test('says so when the given good commit is broken too', async () => {
   const outcome = await findCulprit({ cwd: repo, test: 'node -e "process.exit(1)"', good: 'HEAD~3' });
   assert.equal(outcome.kind, 'good-fails');
+});
+
+test('a --good or --bad that starts with a dash is never given to git', async () => {
+  await assert.rejects(findCulprit({ cwd: repo, test: DEMO_TEST, bad: '--since=2020' }), /--bad --since=2020 is not a commit/);
+});
+
+test('a bug called "demo" after -- is described, not the demo command', async () => {
+  const outside = await mkdtemp(join(tmpdir(), 'whobrokeit-nogit-'));
+  try {
+    const cli = fileURLToPath(new URL('../src/cli.ts', import.meta.url));
+    const run = await runCommand(`node --import ${import.meta.resolve('tsx')} "${cli}" --agent "node -e 0" -- demo`, outside, 60_000);
+    assert.equal(run.code, 1);
+    assert.match(run.output, /not inside a git repository/);
+  } finally {
+    await rm(outside, { recursive: true, force: true });
+  }
 });
 
 test('rejects --with files outside the repo', async () => {
