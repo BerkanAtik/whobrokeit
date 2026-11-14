@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { after, before, test } from 'node:test';
 import { DEMO_REPRO, DEMO_TEST, createDemoRepo } from '../src/demo.js';
 import { findCulprit } from '../src/engine.js';
+import { runCommand } from '../src/exec.js';
 import { git } from '../src/git.js';
 import { colorFor, excerpt, timeAgo } from '../src/report.js';
 
@@ -95,5 +96,18 @@ test('FORCE_COLOR turns color on without a terminal, and 0 turns it off', () => 
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
+  }
+});
+
+test('tested code does not see AI keys or GitHub tokens', async () => {
+  process.env.ANTHROPIC_API_KEY = 'sk-secret';
+  process.env.GITHUB_TOKEN = 'ghs-secret';
+  try {
+    const show = `node -e "console.log([process.env.ANTHROPIC_API_KEY, process.env.GITHUB_TOKEN, process.env.PATH ? 'path' : ''].join(','))"`;
+    assert.equal((await runCommand(show, repo, 30_000, { untrusted: true })).output.trim(), ',,path');
+    assert.equal((await runCommand(show, repo, 30_000)).output.trim(), 'sk-secret,ghs-secret,path');
+  } finally {
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.GITHUB_TOKEN;
   }
 });

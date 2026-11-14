@@ -122,7 +122,7 @@ export class Sandbox {
       const setup = await this.pendingSetup();
       if (setup) {
         onSetup?.(setup.command);
-        const result = await runCommand(setup.command, this.dir, this.timeoutMs);
+        const result = await runCommand(setup.command, this.dir, this.timeoutMs, { untrusted: true });
         if (result.code !== 0) {
           this.installedKey = null;
           return { verdict: 'skip', run: result, reason: 'dependencies failed to install' };
@@ -130,7 +130,7 @@ export class Sandbox {
         this.installedKey = setup.key;
       }
 
-      const run = await runCommand(test, this.dir, this.timeoutMs);
+      const run = await runCommand(test, this.dir, this.timeoutMs, { untrusted: true });
       return { ...classify(run), run };
     } finally {
       await this.clean();

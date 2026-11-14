@@ -13,7 +13,26 @@ export interface RunOptions {
   input?: string;
   /** Called with stdout as it arrives (whole characters, any chunking). */
   onStdout?: (text: string) => void;
+  /**
+   * The command is the code under test or a test an agent wrote, not something we trust. It
+   * gets no AI keys or GitHub tokens, so a test cannot simply read them from its environment.
+   */
+  untrusted?: boolean;
 }
+
+/** Credentials whobrokeit or its agent may need, but the tested code never does. */
+const SECRET_ENV = [
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_AUTH_TOKEN',
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  'OPENAI_API_KEY',
+  'CODEX_API_KEY',
+  'GITHUB_TOKEN',
+  'GH_TOKEN',
+  'ACTIONS_RUNTIME_TOKEN',
+  'ACTIONS_ID_TOKEN_REQUEST_TOKEN',
+  'ACTIONS_ID_TOKEN_REQUEST_URL',
+];
 
 const MAX_OUTPUT = 200_000;
 const active = new Set<ChildProcess>();
@@ -26,6 +45,11 @@ export function runCommand(command: string, cwd: string, timeoutMs: number, opti
     delete env.FORCE_COLOR;
     // Set when whobrokeit itself runs under `node --test`; a nested `node --test` would then exit 0.
     delete env.NODE_TEST_CONTEXT;
+    if (options.untrusted) {
+      for (const name of Object.keys(env)) {
+        if (SECRET_ENV.includes(name.toUpperCase())) delete env[name];
+      }
+    }
 
     const child = spawn(command, {
       cwd,
