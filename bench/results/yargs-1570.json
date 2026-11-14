@@ -1,0 +1,69 @@
+{
+  "id": "yargs-1570",
+  "result": "correct",
+  "culprit": "b9409da feat(deps)!: pull in yargs-parser@17.0.0 (#1553)",
+  "fix": "verified",
+  "seconds": 115,
+  "model": "sonnet",
+  "outcome": {
+    "kind": "found",
+    "culprit": {
+      "sha": "b9409da199ebca515a848489c206b807fab2e65d",
+      "short": "b9409da",
+      "subject": "feat(deps)!: pull in yargs-parser@17.0.0 (#1553)",
+      "author": "Benjamin E. Coe",
+      "date": "2020-02-12T04:41:06-08:00",
+      "files": [
+        {
+          "path": "package.json",
+          "added": 1,
+          "removed": 1
+        }
+      ]
+    },
+    "parent": {
+      "sha": "6e4bc2aa0a6c5560928296f18e008a15b2aaf335",
+      "short": "6e4bc2a",
+      "subject": "chore(deps): update dependency cross-spawn to v7 (#1546)"
+    },
+    "good": {
+      "sha": "8433c8dc16009b56a037fa1754351cfd7339b3c9",
+      "short": "8433c8d",
+      "subject": "chore(deps): update dependency chalk to v3 (#1545)"
+    },
+    "bad": {
+      "sha": "c36c571e4e15dfe26be1d919e4991fb6ab6ed9fd",
+      "short": "c36c571",
+      "subject": "chore: release 15.2.0 (#1558)"
+    },
+    "proven": true,
+    "proof": {
+      "culprit": "bad",
+      "parent": "good"
+    },
+    "failureOutput": "WHOBROKEIT_BUG: expected header=[\"foo\"] and _=[\"bar\"], but got header=[\"foo\",\"bar\"] and _=[]\n",
+    "explanation": {
+      "agent": "Claude Code",
+      "why": "`yargs.js` (`_parseArgs`) passes the parser configuration to `yargs-parser`. The `yargs-parser@17` upgrade added a `greedy-arrays` setting that defaults to true. With that default, `eatArray` runs for any `array` option and consumes every following non-flag argument. `eatArray` is also checked before `eatNargs`, so `nargs: 1` on an array option is ignored. In 15.1.0 and `yargs-parser@16`, an array with `nargs` took only `nargs` values, so `--header foo bar` gave `header=['foo']` and `_=['bar']`. The earlier attempt did not work because it used the key `greedy-array` (singular), and the parser reads `greedy-arrays`.",
+      "fix": {
+        "patch": "diff --git a/yargs.js b/yargs.js\nindex c320660..f78ec42 100644\n--- a/yargs.js\n+++ b/yargs.js\n@@ -1077,6 +1077,15 @@ function Yargs (processArgs, cwd, parentRequire) {\n \n     options.__ = y18n.__\n     options.configuration = self.getParserConfiguration()\n+    if (options.configuration['greedy-arrays'] === undefined) {\n+      // an array option with nargs must only take nargs values (pre-15.2.0 behavior)\n+      const hasArrayWithNargs = (options.array || []).some(\n+        key => Object.prototype.hasOwnProperty.call(options.narg || {}, key)\n+      )\n+      if (hasArrayWithNargs) {\n+        options.configuration = Object.assign({}, options.configuration, { 'greedy-arrays': false })\n+      }\n+    }\n \n     const populateDoubleDash = !!options.configuration['populate--']\n     const config = Object.assign({}, options.configuration, {\n",
+        "files": [
+          "yargs.js"
+        ],
+        "verified": true,
+        "attempts": 2
+      }
+    },
+    "checks": 13,
+    "durationMs": 111808,
+    "repro": {
+      "path": "whobrokeit-repro.mjs",
+      "command": "node whobrokeit-repro.mjs",
+      "code": "import { createRequire } from 'module'\nconst require = createRequire(import.meta.url)\nconst yargs = require('./index.js')\n\n// Same setup as in the bug report: a repeatable option with nargs: 1\nconst argv = yargs\n  .option('header', {\n    requiresArg: true,\n    array: true,\n    nargs: 1\n  })\n  .parse(['--header', 'foo', 'bar'])\n\nconst header = JSON.stringify(argv.header)\nconst rest = JSON.stringify(argv._)\n\nif (header === '[\"foo\"]' && rest === '[\"bar\"]') {\n  console.log('OK: nargs: 1 is respected for the array option')\n  process.exitCode = 0\n} else {\n  console.log(\n    `WHOBROKEIT_BUG: expected header=[\"foo\"] and _=[\"bar\"], but got header=${header} and _=${rest}`\n  )\n  process.exitCode = 1\n}\n",
+      "agent": "Claude Code",
+      "attempts": 1
+    },
+    "savedTest": ".git/whobrokeit/whobrokeit-repro.mjs",
+    "savedFix": ".git/whobrokeit/fix.patch"
+  }
+}

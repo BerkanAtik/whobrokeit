@@ -1,0 +1,74 @@
+{
+  "id": "commander-843",
+  "result": "correct",
+  "culprit": "28ff02a Fix to emit the action even without command (#778)",
+  "fix": "verified",
+  "seconds": 51,
+  "model": "sonnet",
+  "outcome": {
+    "kind": "found",
+    "culprit": {
+      "sha": "28ff02a9e47a91a5e01adaf06ac49e127813759c",
+      "short": "28ff02a",
+      "subject": "Fix to emit the action even without command (#778)",
+      "author": "Tomoaki Abe",
+      "date": "2018-07-17T15:09:59+09:00",
+      "files": [
+        {
+          "path": "index.js",
+          "added": 3,
+          "removed": 0
+        },
+        {
+          "path": "test/test.noCommand.action.js",
+          "added": 13,
+          "removed": 0
+        }
+      ]
+    },
+    "parent": {
+      "sha": "2d49ddf7ab4663629f8661e216ca66b5fad3966d",
+      "short": "2d49ddf",
+      "subject": "Fix the path of tsc command (#824)"
+    },
+    "good": {
+      "sha": "aaa447a8f0717771d0b021c27b709ef867c220e0",
+      "short": "aaa447a",
+      "subject": "npm update (#823)"
+    },
+    "bad": {
+      "sha": "25b06ee12b6f14afa0b4b7b6f028a66a7c4faf5e",
+      "short": "25b06ee",
+      "subject": "version bump 2.17.0"
+    },
+    "proven": true,
+    "proof": {
+      "culprit": "bad",
+      "parent": "good"
+    },
+    "failureOutput": "WHOBROKEIT_BUG: expected the \"*\" action not to run when no command is given, but it ran and received a command value\n",
+    "explanation": {
+      "agent": "Claude Code",
+      "why": "In `Command.prototype.parseArgs` in `index.js`, commit 28ff02a added an unconditional `emit('command:*')` for the case where no arguments are given. That emit exists so a program-level `.action()` runs without a command. A program-level action registers its listener on the `command:*` event. A subcommand explicitly named `'*'` registers its listener on the same event. So the new emit also fires the `'*'` catch-all subcommand when the user typed no command. Before the commit, that catch-all ran only when an unmatched command name was given.",
+      "fix": {
+        "patch": "diff --git a/index.js b/index.js\nindex eebaec0..e24cb78 100644\n--- a/index.js\n+++ b/index.js\n@@ -660,7 +660,8 @@ Command.prototype.parseArgs = function(args, unknown) {\n     if (unknown.length > 0) {\n       this.unknownOption(unknown[0]);\n     }\n-    if (this._args.filter(a => a.required).length === 0) {\n+    if (this._args.filter(a => a.required).length === 0 &&\n+      !this.commands.some(function(c) { return c._name === '*'; })) {\n       this.emit('command:*');\n     }\n   }\n",
+        "files": [
+          "index.js"
+        ],
+        "verified": true,
+        "attempts": 1
+      }
+    },
+    "checks": 8,
+    "durationMs": 48610,
+    "repro": {
+      "path": "whobrokeit-repro.mjs",
+      "command": "node whobrokeit-repro.mjs",
+      "code": "import { createRequire } from 'node:module';\nimport { resolve } from 'node:path';\n\nconst require = createRequire(import.meta.url);\nconst commander = require(resolve('index.js'));\nconst Command = commander.Command;\n\nconst program = new Command();\nlet cmdValue;\n\nprogram\n  .version('0.0.1')\n  .command('*')\n  .description('test')\n  .action(function (cmd) {\n    cmdValue = cmd;\n  });\n\nprogram.parse(['node', 'test.js']);\n\nif (typeof cmdValue !== 'undefined') {\n  console.log('WHOBROKEIT_BUG: expected the \"*\" action not to run when no command is given, but it ran and received a command value');\n  process.exitCode = 1;\n} else {\n  process.exitCode = 0;\n}\n",
+      "agent": "Claude Code",
+      "attempts": 1
+    },
+    "savedTest": ".git/whobrokeit/whobrokeit-repro.mjs",
+    "savedFix": ".git/whobrokeit/fix.patch"
+  }
+}

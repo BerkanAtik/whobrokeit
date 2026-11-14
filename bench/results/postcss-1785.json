@@ -1,0 +1,74 @@
+{
+  "id": "postcss-1785",
+  "result": "correct",
+  "culprit": "72784326 recalculate the insertion index after normalizing a node",
+  "fix": "verified",
+  "seconds": 88,
+  "model": "sonnet",
+  "outcome": {
+    "kind": "found",
+    "culprit": {
+      "sha": "727843268accce33bbcee21766f8799dbdc2cca0",
+      "short": "72784326",
+      "subject": "recalculate the insertion index after normalizing a node",
+      "author": "Romain Menke",
+      "date": "2022-09-30T08:29:35+02:00",
+      "files": [
+        {
+          "path": "lib/container.js",
+          "added": 10,
+          "removed": 10
+        },
+        {
+          "path": "test/container.test.ts",
+          "added": 36,
+          "removed": 0
+        }
+      ]
+    },
+    "parent": {
+      "sha": "e1538a42db51d59307079540eab09edd6b3acfd4",
+      "short": "e1538a42",
+      "subject": "Merge pull request #1780 from romainmenke/add-test-for-sorting-nodes--courageous-malayan-civet-f154d4f2bc"
+    },
+    "good": {
+      "sha": "cedc6a55e2dbb1a9f23b355859df2ed9f6e9a81e",
+      "short": "cedc6a55",
+      "subject": "Merge pull request #1779 from muddv/docs-index"
+    },
+    "bad": {
+      "sha": "cf9425aeaea23c290ad4893ecd02b9741e14c281",
+      "short": "cf9425ae",
+      "subject": "Merge pull request #1789 from eduardopilati/patch-1"
+    },
+    "proven": true,
+    "proof": {
+      "culprit": "bad",
+      "parent": "good"
+    },
+    "failureOutput": "WHOBROKEIT_BUG: expected a newline between the node inserted with before() and the reference node, but got \"c {}a {\\n  color: red;\\n}\\nb {\\n  color: blue;\\n}\\n\"\n",
+    "explanation": {
+      "agent": "Claude Code",
+      "why": "In `Container#insertBefore` (`lib/container.js`), commit 72784326 stopped reassigning `exist` to its numeric index. It now keeps the original argument in `exist` and stores the index in `existIndex`. The `type` check still read `exist === 0`. When `before()` passes a node, as `node.before()` does, that check is always false. The `'prepend'` hint therefore never reaches `normalize()` when inserting before the first child. `Root#normalize` uses that hint to copy the `raws.before` spacing, so the inserted node comes out with no newline between it and the reference node (`c {}a {...`). The fix compares `existIndex` to 0 instead.",
+      "fix": {
+        "patch": "diff --git a/lib/container.js b/lib/container.js\nindex 39fe036f..0f047bea 100644\n--- a/lib/container.js\n+++ b/lib/container.js\n@@ -177,7 +177,7 @@ class Container extends Node {\n \n   insertBefore(exist, add) {\n     let existIndex = this.index(exist)\n-    let type = exist === 0 ? 'prepend' : false\n+    let type = existIndex === 0 ? 'prepend' : false\n     let nodes = this.normalize(add, this.proxyOf.nodes[existIndex], type).reverse()\n     existIndex = this.index(exist)\n     for (let node of nodes) this.proxyOf.nodes.splice(existIndex, 0, node)\n",
+        "files": [
+          "lib/container.js"
+        ],
+        "verified": true,
+        "attempts": 1
+      }
+    },
+    "checks": 14,
+    "durationMs": 86182,
+    "repro": {
+      "path": "whobrokeit-repro.mjs",
+      "command": "node whobrokeit-repro.mjs",
+      "code": "import { createRequire } from 'node:module'\n\nconst require = createRequire(import.meta.url)\nconst postcss = require('./lib/postcss')\n\nconst root = postcss.parse('a {\\n  color: red;\\n}\\nb {\\n  color: blue;\\n}\\n')\nconst ref = root.first\n\n// Insert a new rule before the first node with before()\nref.before(postcss.rule({ selector: 'c' }))\n\nconst out = root.toString()\n\n// The new node should be separated from the reference node by a newline\nif (!/c\\s*\\{\\s*\\}\\s*\\n\\s*a \\{/.test(out)) {\n  console.log(\n    'WHOBROKEIT_BUG: expected a newline between the node inserted with before() ' +\n      'and the reference node, but got ' + JSON.stringify(out)\n  )\n  process.exitCode = 1\n}\n",
+      "agent": "Claude Code",
+      "attempts": 2
+    },
+    "savedTest": ".git/whobrokeit/whobrokeit-repro.mjs",
+    "savedFix": ".git/whobrokeit/fix.patch"
+  }
+}

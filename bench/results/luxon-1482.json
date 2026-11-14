@@ -1,0 +1,74 @@
+{
+  "id": "luxon-1482",
+  "result": "correct",
+  "culprit": "2411f6e1 Fix normalize() to handle partially negative inputs (#1467)",
+  "fix": "verified",
+  "seconds": 95,
+  "model": "sonnet",
+  "outcome": {
+    "kind": "found",
+    "culprit": {
+      "sha": "2411f6e1f98026a0586f62fef3b5d46e8e405cd5",
+      "short": "2411f6e1",
+      "subject": "Fix normalize() to handle partially negative inputs (#1467)",
+      "author": "Thomas Kam",
+      "date": "2023-08-08T22:18:50-04:00",
+      "files": [
+        {
+          "path": "src/duration.js",
+          "added": 19,
+          "removed": 11
+        },
+        {
+          "path": "test/duration/units.test.js",
+          "added": 4,
+          "removed": 0
+        }
+      ]
+    },
+    "parent": {
+      "sha": "dc26ed2407ce13fb4d4095bc774acf443ea86ea7",
+      "short": "dc26ed24",
+      "subject": "Update datetime.js documentation (#1470)"
+    },
+    "good": {
+      "sha": "bcff073cc0a4c67ecbf1c305d72cc12b69ed86c1",
+      "short": "bcff073c",
+      "subject": "Changes to support a 'includeMilliseconds' option for 'DateTime.toSQLTime()' and 'DateTime.toSQL()' (#1400)"
+    },
+    "bad": {
+      "sha": "559a212e767e5d84f8a480ef74f6a3cb274b0f32",
+      "short": "559a212e",
+      "subject": "Handle invalid Durations in toHuman and toMillis (#1489)"
+    },
+    "proven": true,
+    "proof": {
+      "culprit": "bad",
+      "parent": "good"
+    },
+    "failureOutput": "WHOBROKEIT_BUG: expected warrantyLeft \"P1W\" but got \"P0.651W2DT10H17M45.6S\"\n",
+    "explanation": {
+      "agent": "Claude Code",
+      "why": "In `src/duration.js`, the commit changed `convert()` from truncating toward zero (with a special case for mixed signs) to `Math.floor`. `shiftTo()` also uses `convert()` to roll smaller units up into larger ones, and it calls it on values that can have mixed signs. Here `P14D` minus `P1W` gives `{days: 14, weeks: -1, ...}`. Converting `weeks: -1` into years gives `floor(-1/52.17) = -1`, so a spurious `-1` year is added and the weeks are bumped up by about 52. That is where the `P0.651W2DT10H17M45.6S` comes from. `floor` is only right inside `normalize()`, which now only sees non-negative totals. `shiftTo()` still needs truncation toward zero.",
+      "fix": {
+        "patch": "diff --git a/src/duration.js b/src/duration.js\nindex 56cf194b..b450284b 100644\n--- a/src/duration.js\n+++ b/src/duration.js\n@@ -132,10 +132,10 @@ function removePrecisionIssue(a) {\n }\n \n // NB: mutates parameters\n-function convert(matrix, fromMap, fromUnit, toMap, toUnit) {\n+function convert(matrix, fromMap, fromUnit, toMap, toUnit, round = Math.floor) {\n   const conv = matrix[toUnit][fromUnit],\n     raw = fromMap[fromUnit] / conv,\n-    added = Math.floor(raw);\n+    added = round(raw);\n \n   toMap[toUnit] = removePrecisionIssue(toMap[toUnit] + added);\n   fromMap[fromUnit] = removePrecisionIssue(fromMap[fromUnit] - added * conv);\n@@ -764,7 +764,7 @@ export default class Duration {\n         // plus anything further down the chain that should be rolled up in to this\n         for (const down in vals) {\n           if (orderedUnits.indexOf(down) > orderedUnits.indexOf(k)) {\n-            convert(this.matrix, vals, down, built, k);\n+            convert(this.matrix, vals, down, built, k, Math.trunc);\n           }\n         }\n         // otherwise, keep it in the wings to boil it later\n",
+        "files": [
+          "src/duration.js"
+        ],
+        "verified": true,
+        "attempts": 1
+      }
+    },
+    "checks": 12,
+    "durationMs": 89666,
+    "repro": {
+      "path": "whobrokeit-repro.mjs",
+      "command": "node whobrokeit-repro.mjs",
+      "code": "import { createRequire } from \"node:module\";\nimport { existsSync } from \"node:fs\";\nimport { pathToFileURL } from \"node:url\";\nimport path from \"node:path\";\n\nconst root = process.cwd();\nconst built = path.join(root, \"build\", \"node\", \"luxon.js\");\nlet luxon;\nif (existsSync(built)) {\n  luxon = createRequire(import.meta.url)(built);\n} else {\n  luxon = await import(pathToFileURL(path.join(root, \"src\", \"luxon.js\")).href);\n}\nconst { DateTime, Duration } = luxon;\n\nconst purchaseDate = DateTime.fromObject({ day: 1, month: 1, year: 2020 }, { zone: \"UTC\" });\nconst warranty = Duration.fromObject({ days: 14 }, { conversionAccuracy: \"longterm\" });\nconst now = DateTime.fromObject({ day: 8, month: 1, year: 2020 }, { zone: \"UTC\" });\nconst age = now.diff(purchaseDate).shiftToAll();\nconst warrantyLeft = warranty.minus(age).shiftToAll().toString();\n\nif (warrantyLeft !== \"P1W\") {\n  console.log(`WHOBROKEIT_BUG: expected warrantyLeft \"P1W\" but got \"${warrantyLeft}\"`);\n  process.exitCode = 1;\n} else {\n  process.exitCode = 0;\n}\n",
+      "agent": "Claude Code",
+      "attempts": 1
+    },
+    "savedTest": ".git/whobrokeit/whobrokeit-repro.mjs",
+    "savedFix": ".git/whobrokeit/fix.patch"
+  }
+}

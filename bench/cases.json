@@ -1,0 +1,14 @@
+[
+  { "id": "commander-843", "repo": "tj/commander.js", "issue": 843, "bad": "25b06ee", "expected": ["28ff02a"], "truth": "fix PR #844 changes the code added in #778" },
+  { "id": "semver-580", "repo": "npm/node-semver", "issue": 580, "bad": "4f0f6b1", "expected": ["abdd93d"], "truth": "fix PR #583 corrects the regex from #571" },
+  { "id": "postcss-1785", "repo": "postcss/postcss", "issue": 1785, "bad": "cf9425ae", "expected": ["72784326"], "truth": "fix PR #1790: \"I missed one instance\" in #1781" },
+  { "id": "postcss-1502", "repo": "postcss/postcss", "issue": 1502, "bad": "77e4b3f1", "expected": ["d65b0bfc", "275f47ab"], "truth": "fix PR #1504 repairs toJSON from #1488" },
+  { "id": "luxon-1482", "repo": "moment/luxon", "issue": 1482, "bad": "559a212e", "expected": ["2411f6e1"], "truth": "fixed in 11e454c, which reworks #1467" },
+  { "id": "luxon-1493", "repo": "moment/luxon", "issue": 1493, "bad": "2316f218", "expected": ["11e454c0"], "truth": "named in the issue and in fix PR #1494" },
+  { "id": "marked-1505", "repo": "markedjs/marked", "issue": 1505, "bad": "0b7fc5e3", "expected": ["be27472a", "b1ddd3cd"], "truth": "fix PR #1507: \"broke in v0.6.2 because of #1460\"" },
+  { "id": "marked-1754", "repo": "markedjs/marked", "issue": 1754, "bad": "9f201d30", "expected": ["PR:a761316b..dddf9ae7"], "truth": "cross-referenced PR #1686 (any commit of that PR counts)" },
+  { "id": "express-2550", "repo": "expressjs/express", "issue": 2550, "bad": "eaf3318d", "expected": ["566720be"], "truth": "named in the issue and in fix PR #2551" },
+  { "id": "markdown-it-1024", "repo": "markdown-it/markdown-it", "issue": 1024, "bad": "0fe7ccb", "expected": ["cd24778", "5e90063"], "truth": "no maintainer statement; 14.1.0 changed delimiter scanning in these commits" },
+  { "id": "fastify-5089", "repo": "fastify/fastify", "issue": 5089, "bad": "91c7b448^", "expected": ["797f27d7"], "truth": "fix PR #5090 \"HEAD route reseting\" follows #5078 \"HEAD route search\"" },
+  { "id": "yargs-1570", "repo": "yargs/yargs", "issue": 1570, "bad": "a5edc328^", "expected": ["b9409da"], "truth": "named in the issue" }
+]

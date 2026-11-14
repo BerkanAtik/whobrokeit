@@ -1,0 +1,79 @@
+{
+  "id": "luxon-1493",
+  "result": "correct",
+  "culprit": "11e454c0 Fix for negative units in conversions",
+  "fix": "verified",
+  "seconds": 70,
+  "model": "sonnet",
+  "outcome": {
+    "kind": "found",
+    "culprit": {
+      "sha": "11e454c0fdd2da8cc6b5821b89c03c52a7c64b91",
+      "short": "11e454c0",
+      "subject": "Fix for negative units in conversions",
+      "author": "Isaac Cambron",
+      "date": "2023-08-22T16:28:17-04:00",
+      "files": [
+        {
+          "path": "src/duration.js",
+          "added": 4,
+          "removed": 3
+        },
+        {
+          "path": "src/impl/util.js",
+          "added": 4,
+          "removed": 0
+        },
+        {
+          "path": "test/duration/units.test.js",
+          "added": 9,
+          "removed": 0
+        }
+      ]
+    },
+    "parent": {
+      "sha": "559a212e767e5d84f8a480ef74f6a3cb274b0f32",
+      "short": "559a212e",
+      "subject": "Handle invalid Durations in toHuman and toMillis (#1489)"
+    },
+    "good": {
+      "sha": "559a212e767e5d84f8a480ef74f6a3cb274b0f32",
+      "short": "559a212e",
+      "subject": "Handle invalid Durations in toHuman and toMillis (#1489)"
+    },
+    "bad": {
+      "sha": "2316f21861e5c726a2c4e4c72065964004389fa2",
+      "short": "2316f218",
+      "subject": "bump to 3.4.1"
+    },
+    "proven": true,
+    "proof": {
+      "culprit": "bad",
+      "parent": "good"
+    },
+    "failureOutput": "WHOBROKEIT_BUG: expected normalize() to give {\"hours\":95,\"minutes\":59,\"seconds\":50} but got {\"hours\":96,\"minutes\":0,\"seconds\":-10}\n",
+    "explanation": {
+      "agent": "Claude Code",
+      "why": "In `src/duration.js`, `convert()` now rounds with `signedFloor`, which is `Math.ceil` for values of zero or below. `normalizeValues()` (used by `normalize()`) goes through `convert()`. For `seconds: -10`, the raw minutes value is -0.167. That used to floor to -1, which borrowed a minute and left 50 seconds. It now rounds to 0, so nothing is converted and the duration comes back unchanged. The new rounding was meant for the `shiftTo` mixed-unit case and should not have changed `normalize()`.",
+      "fix": {
+        "patch": "diff --git a/src/duration.js b/src/duration.js\nindex 76a57b27..4217590b 100644\n--- a/src/duration.js\n+++ b/src/duration.js\n@@ -133,10 +133,10 @@ function removePrecisionIssue(a) {\n }\n \n // NB: mutates parameters\n-function convert(matrix, fromMap, fromUnit, toMap, toUnit) {\n+function convert(matrix, fromMap, fromUnit, toMap, toUnit, floor = false) {\n   const conv = matrix[toUnit][fromUnit];\n   const raw = fromMap[fromUnit] / conv;\n-  const added = signedFloor(raw);\n+  const added = floor ? Math.floor(raw) : signedFloor(raw);\n \n   toMap[toUnit] = removePrecisionIssue(toMap[toUnit] + added);\n   fromMap[fromUnit] = removePrecisionIssue(fromMap[fromUnit] - added * conv);\n@@ -147,7 +147,7 @@ function normalizeValues(matrix, vals) {\n   reverseUnits.reduce((previous, current) => {\n     if (!isUndefined(vals[current])) {\n       if (previous) {\n-        convert(matrix, vals, previous, vals, current);\n+        convert(matrix, vals, previous, vals, current, true);\n       }\n       return current;\n     } else {\n",
+        "files": [
+          "src/duration.js"
+        ],
+        "verified": true,
+        "attempts": 1
+      }
+    },
+    "checks": 6,
+    "durationMs": 63999,
+    "repro": {
+      "path": "whobrokeit-repro.mjs",
+      "command": "node whobrokeit-repro.mjs",
+      "code": "import { Duration } from \"./src/luxon.js\";\n\nif (typeof Duration?.fromObject !== \"function\") {\n  process.exitCode = 125;\n} else {\n  const dur = Duration.fromObject({ hours: 96, minutes: 0, seconds: -10 });\n  if (typeof dur.normalize !== \"function\") {\n    process.exitCode = 125;\n  } else {\n    const got = dur.normalize().toObject();\n    const expected = { hours: 95, minutes: 59, seconds: 50 };\n    if (JSON.stringify(got) !== JSON.stringify(expected)) {\n      console.log(\n        `WHOBROKEIT_BUG: expected normalize() to give ${JSON.stringify(expected)} but got ${JSON.stringify(got)}`\n      );\n      process.exitCode = 1;\n    } else {\n      process.exitCode = 0;\n    }\n  }\n}\n",
+      "agent": "Claude Code",
+      "attempts": 1
+    },
+    "savedTest": ".git/whobrokeit/whobrokeit-repro.mjs",
+    "savedFix": ".git/whobrokeit/fix.patch"
+  }
+}

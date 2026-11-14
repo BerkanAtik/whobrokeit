@@ -1,0 +1,74 @@
+{
+  "id": "postcss-1502",
+  "result": "correct",
+  "culprit": "d65b0bfc Deduplicate Input objects in JSON",
+  "fix": "verified",
+  "seconds": 135,
+  "model": "sonnet",
+  "outcome": {
+    "kind": "found",
+    "culprit": {
+      "sha": "d65b0bfce1896f5b0699a94b4410896a0fe529c5",
+      "short": "d65b0bfc",
+      "subject": "Deduplicate Input objects in JSON",
+      "author": "Niklas Mischkulnig",
+      "date": "2020-12-09T00:01:47+01:00",
+      "files": [
+        {
+          "path": "lib/fromJSON.js",
+          "added": 12,
+          "removed": 11
+        },
+        {
+          "path": "lib/node.js",
+          "added": 17,
+          "removed": 4
+        }
+      ]
+    },
+    "parent": {
+      "sha": "c0b35e65ade4ddfe82203a1ddda88bfd94e5f840",
+      "short": "c0b35e65",
+      "subject": "All nodes have a source property, not just Root"
+    },
+    "good": {
+      "sha": "f8a108d46c0c0c1b313b22da1e149f3b0f7025ea",
+      "short": "f8a108d4",
+      "subject": "Show error on unknown property in plugin"
+    },
+    "bad": {
+      "sha": "77e4b3f12a4509e6a996130bd0742a8e9227849c",
+      "short": "77e4b3f1",
+      "subject": "Fix spelling check"
+    },
+    "proven": true,
+    "proof": {
+      "culprit": "bad",
+      "parent": "good"
+    },
+    "failureOutput": "WHOBROKEIT_BUG: expected JSON.stringify(root.nodes[0].nodes) to succeed, but it threw TypeError: inputs.get is not a function\n",
+    "explanation": {
+      "agent": "Claude Code",
+      "why": "In `Node.toJSON` in `lib/node.js`, the commit added an optional `inputs` parameter and treated \"no argument\" as \"this is the top-level call\". `JSON.stringify` always calls `toJSON(key)` with the property key as a string, for example `\"0\"` for array elements. So when you stringify `root.nodes[0].nodes`, each declaration gets `inputs = \"0\"`. That is not null, so the code never creates a `Map`, and `inputs.get(...)` throws \"inputs.get is not a function\". The check must be whether `inputs` is actually a `Map`. The per-call `inputsNextIndex = 0` counter also restarts at 0 in every nested call, so I replaced it with `inputs.size`.",
+      "fix": {
+        "patch": "diff --git a/lib/node.js b/lib/node.js\nindex e3e95112..1c550680 100644\n--- a/lib/node.js\n+++ b/lib/node.js\n@@ -168,9 +168,8 @@ class Node {\n \n   toJSON (inputs) {\n     let fixed = {}\n-    let emitInputs = inputs == null\n-    inputs = inputs || new Map()\n-    let inputsNextIndex = 0\n+    let emitInputs = !(inputs instanceof Map)\n+    if (emitInputs) inputs = new Map()\n \n     for (let name in this) {\n       if (!Object.prototype.hasOwnProperty.call(this, name)) {\n@@ -193,9 +192,8 @@ class Node {\n       } else if (name === 'source') {\n         let inputId = inputs.get(value.input)\n         if (inputId == null) {\n-          inputId = inputsNextIndex\n-          inputs.set(value.input, inputsNextIndex)\n-          inputsNextIndex++\n+          inputId = inputs.size\n+          inputs.set(value.input, inputId)\n         }\n         fixed[name] = {\n           inputId,\n",
+        "files": [
+          "lib/node.js"
+        ],
+        "verified": true,
+        "attempts": 1
+      }
+    },
+    "checks": 15,
+    "durationMs": 124547,
+    "repro": {
+      "path": "whobrokeit-repro.mjs",
+      "command": "node whobrokeit-repro.mjs",
+      "code": "import { createRequire } from 'node:module'\n\nconst require = createRequire(import.meta.url)\nconst postcss = require('./lib/postcss.js')\n\nif (typeof postcss.parse !== 'function') {\n  console.log('postcss.parse does not exist on this version')\n  process.exitCode = 125\n} else {\n  const root = postcss.parse(`\n.cls {\n  color: orange;\n}`)\n  const nodes = root.nodes[0].nodes\n  let error = null\n  try {\n    JSON.stringify(nodes)\n  } catch (e) {\n    if (e instanceof TypeError && /inputs\\.get is not a function/.test(e.message)) {\n      error = e\n    } else {\n      throw e\n    }\n  }\n  if (error) {\n    console.log(\n      'WHOBROKEIT_BUG: expected JSON.stringify(root.nodes[0].nodes) to succeed, ' +\n        'but it threw TypeError: ' + error.message\n    )\n    process.exitCode = 1\n  } else {\n    process.exitCode = 0\n  }\n}\n",
+      "agent": "Claude Code",
+      "attempts": 1
+    },
+    "savedTest": ".git/whobrokeit/whobrokeit-repro.mjs",
+    "savedFix": ".git/whobrokeit/fix.patch"
+  }
+}

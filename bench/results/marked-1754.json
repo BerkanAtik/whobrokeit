@@ -1,0 +1,114 @@
+{
+  "id": "marked-1754",
+  "result": "correct",
+  "culprit": "4e2ec903 Now passes several more tests",
+  "fix": "verified",
+  "seconds": 86,
+  "model": "sonnet",
+  "outcome": {
+    "kind": "found",
+    "culprit": {
+      "sha": "4e2ec90374bc79591d20d2bef655b59ce960ad37",
+      "short": "4e2ec903",
+      "subject": "Now passes several more tests",
+      "author": "Trevor Buckner",
+      "date": "2020-05-29T16:25:46-04:00",
+      "files": [
+        {
+          "path": "src/Lexer.js",
+          "added": 5,
+          "removed": 4
+        },
+        {
+          "path": "src/Tokenizer.js",
+          "added": 9,
+          "removed": 7
+        },
+        {
+          "path": "src/rules.js",
+          "added": 5,
+          "removed": 5
+        },
+        {
+          "path": "test/specs/commonmark/commonmark.0.29.json",
+          "added": 4,
+          "removed": 4
+        },
+        {
+          "path": "test/specs/gfm/commonmark.0.29.json",
+          "added": 4,
+          "removed": 4
+        },
+        {
+          "path": "test/specs/new/em_2char.html",
+          "added": 1,
+          "removed": 3
+        },
+        {
+          "path": "test/specs/new/em_2char.md",
+          "added": 0,
+          "removed": 2
+        },
+        {
+          "path": "test/specs/new/em_left_square_bracket.html",
+          "added": 0,
+          "removed": 1
+        },
+        {
+          "path": "test/specs/new/em_left_square_bracket.md",
+          "added": 0,
+          "removed": 1
+        },
+        {
+          "path": "test/specs/what/em_left_square_bracket000.md",
+          "added": 1,
+          "removed": 0
+        }
+      ]
+    },
+    "parent": {
+      "sha": "40493bbc2803f01929af069e75753f31adeedd12",
+      "short": "40493bbc",
+      "subject": "Follow GFM spec on Left-flanking-delimiter-runs"
+    },
+    "good": {
+      "sha": "a1d224d899b6268602fce627bb3174982c592626",
+      "short": "a1d224d8",
+      "subject": "🗜️ build [skip ci]"
+    },
+    "bad": {
+      "sha": "9f201d307c0c10601a4c969be023d6ded09db09b",
+      "short": "9f201d30",
+      "subject": "Merge pull request #1757 from markedjs/dependabot/npm_and_yarn/node-fetch-2.6.1"
+    },
+    "proven": true,
+    "proof": {
+      "culprit": "bad",
+      "parent": "good"
+    },
+    "failureOutput": "WHOBROKEIT_BUG: expected <p><em>te</em><strong>st</strong></p> but got <p>_te_<strong>st</strong></p>\n",
+    "explanation": {
+      "agent": "Claude Code",
+      "why": "In `src/rules.js`, the `em.endUnd` regex decides where an underscore emphasis ends. It requires the closing `_` to be followed by whitespace, punctuation or end of input. The punctuation list was changed in 4e2ec903 so that it no longer contains `*`. That means the `_` in `_te_**st**`, which is followed by `**`, no longer counts as a valid closer. `Tokenizer.em` therefore finds no end and `_te_` is output as plain text, although 1.1.0 rendered it as `<em>`.",
+      "fix": {
+        "patch": "diff --git a/src/rules.js b/src/rules.js\nindex f6ef4529..e346e65f 100644\n--- a/src/rules.js\n+++ b/src/rules.js\n@@ -179,7 +179,7 @@ const inline = {\n     start: /^(?:(\\*(?=[punctuation]))|\\*)(?![*\\s])|_/, // (1) returns if starts w/ punctuation\n     middle: /^\\*(?:(?:(?!overlapSkip)(?:[^*]|\\\\\\*)|overlapSkip)|\\*(?:(?!overlapSkip)(?:[^*]|\\\\\\*)|overlapSkip)*?\\*)+?\\*$|^_(?![_\\s])(?:(?:(?!overlapSkip)(?:[^_]|\\\\_)|overlapSkip)|_(?:(?!overlapSkip)(?:[^_]|\\\\_)|overlapSkip)*?_)+?_$/,\n     endAst: /[^punctuation\\s]\\*(?!\\*)|[punctuation]\\*(?!\\*)(?:(?=[punctuation\\s]|$))/, // last char can't be punct, or final * must also be followed by punct (or endline)\n-    endUnd: /[^\\s]_(?!_)(?:(?=[punctuation\\s])|$)/ // last char can't be a space, and final _ must preceed punct or \\s (or endline)\n+    endUnd: /[^\\s]_(?!_)(?:(?=[punctuation\\s*])|$)/ // last char can't be a space, and final _ must preceed punct, *, or \\s (or endline)\n   },\n   code: /^(`+)([^`]|[^`][\\s\\S]*?[^`])\\1(?!`)/,\n   br: /^( {2,}|\\\\)\\n(?!\\s*$)/,\n",
+        "files": [
+          "src/rules.js"
+        ],
+        "verified": true,
+        "attempts": 1
+      }
+    },
+    "checks": 16,
+    "durationMs": 83870,
+    "repro": {
+      "path": "whobrokeit-repro.mjs",
+      "command": "node whobrokeit-repro.mjs",
+      "code": "import { createRequire } from 'module';\n\nconst require = createRequire(import.meta.url);\nlet marked = require('./');\nif (typeof marked !== 'function' && marked && typeof marked.marked === 'function') {\n  marked = marked.marked;\n}\nif (typeof marked !== 'function') {\n  console.log('marked is not available as a function');\n  process.exitCode = 125;\n} else {\n  const input = '_te_**st**';\n  const expected = '<p><em>te</em><strong>st</strong></p>';\n  const actual = marked(input).trim();\n  if (actual === expected) {\n    process.exitCode = 0;\n  } else {\n    console.log(`WHOBROKEIT_BUG: expected ${expected} but got ${actual}`);\n    process.exitCode = 1;\n  }\n}\n",
+      "agent": "Claude Code",
+      "attempts": 1
+    },
+    "savedTest": ".git/whobrokeit/whobrokeit-repro.mjs",
+    "savedFix": ".git/whobrokeit/fix.patch"
+  }
+}

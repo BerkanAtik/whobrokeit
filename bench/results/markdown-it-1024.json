@@ -1,0 +1,89 @@
+{
+  "id": "markdown-it-1024",
+  "result": "correct",
+  "culprit": "cd24778 Update to comply with spec 0.31.2",
+  "fix": "verified",
+  "seconds": 91,
+  "model": "sonnet",
+  "outcome": {
+    "kind": "found",
+    "culprit": {
+      "sha": "cd2477863fdcc182cc8739e9bedc7363acb344d8",
+      "short": "cd24778",
+      "subject": "Update to comply with spec 0.31.2",
+      "author": "Michael Howell",
+      "date": "2024-03-02T12:31:42-07:00",
+      "files": [
+        {
+          "path": "lib/common/html_blocks.mjs",
+          "added": 1,
+          "removed": 1
+        },
+        {
+          "path": "lib/common/html_re.mjs",
+          "added": 2,
+          "removed": 2
+        },
+        {
+          "path": "lib/common/utils.mjs",
+          "added": 1,
+          "removed": 1
+        },
+        {
+          "path": "package.json",
+          "added": 1,
+          "removed": 1
+        },
+        {
+          "path": "test/fixtures/markdown-it/fatal.txt",
+          "added": 1,
+          "removed": 1
+        }
+      ]
+    },
+    "parent": {
+      "sha": "eaef476fe6fe9642b7ee13232c4ff1b2a51b444a",
+      "short": "eaef476",
+      "subject": "Fix typo in architecture.md (#994)"
+    },
+    "good": {
+      "sha": "806beade25b4366c7d8ff173028e141ef1d1728a",
+      "short": "806bead",
+      "subject": "Add new pathological test from cmark upstream (#1008)"
+    },
+    "bad": {
+      "sha": "0fe7ccb4b7f30236fb05f623be6924961d296d3d",
+      "short": "0fe7ccb",
+      "subject": "14.1.0 released"
+    },
+    "proven": true,
+    "proof": {
+      "culprit": "bad",
+      "parent": "good"
+    },
+    "failureOutput": "WHOBROKEIT_BUG: expected \"<p><s>⚀</s>one</p>\\n\" but got \"<p>~~⚀~~one</p>\\n\"\n",
+    "explanation": {
+      "agent": "Claude Code",
+      "why": "The commit changed `isPunctChar` in `lib/common/utils.mjs` to also match Unicode symbol characters (`ucmicro.S`), as spec 0.31.2 requires. `StateInline.scanDelims` in `lib/rules_inline/state_inline.mjs` uses that function for flanking checks. In `~~⚀~~one`, the `⚀` before the closing `~~` is now punctuation, and the character after it (`o`) is not. So the closing run no longer counts as right-flanking and can't close, and the strikethrough renders as literal text. Before the commit, `⚀` was not punctuation, so the closer worked. The same thing happens with any non-ASCII symbol.",
+      "fix": {
+        "patch": "diff --git a/lib/rules_inline/state_inline.mjs b/lib/rules_inline/state_inline.mjs\nindex 80cb3c5..72aa7d1 100644\n--- a/lib/rules_inline/state_inline.mjs\n+++ b/lib/rules_inline/state_inline.mjs\n@@ -2,6 +2,7 @@\n \n import Token from '../token.mjs'\n import { isWhiteSpace, isPunctChar, isMdAsciiPunct } from '../common/utils.mjs'\n+import * as ucmicro from 'uc.micro'\n \n function StateInline (src, md, env, outTokens) {\n   this.src = src\n@@ -100,8 +101,14 @@ StateInline.prototype.scanDelims = function (start, canSplitWord) {\n   // treat end of the line as a whitespace\n   const nextChar = pos < max ? this.src.charCodeAt(pos) : 0x20\n \n-  const isLastPunctChar = isMdAsciiPunct(lastChar) || isPunctChar(String.fromCharCode(lastChar))\n-  const isNextPunctChar = isMdAsciiPunct(nextChar) || isPunctChar(String.fromCharCode(nextChar))\n+  // Strikethrough (~) is not part of the spec's emphasis rules, so keep the\n+  // previous behaviour there: Unicode symbols (category S) are not punctuation.\n+  const isPunct = marker === 0x7E\n+    ? (ch) => ucmicro.P.test(String.fromCharCode(ch))\n+    : (ch) => isPunctChar(String.fromCharCode(ch))\n+\n+  const isLastPunctChar = isMdAsciiPunct(lastChar) || isPunct(lastChar)\n+  const isNextPunctChar = isMdAsciiPunct(nextChar) || isPunct(nextChar)\n \n   const isLastWhiteSpace = isWhiteSpace(lastChar)\n   const isNextWhiteSpace = isWhiteSpace(nextChar)\n",
+        "files": [
+          "lib/rules_inline/state_inline.mjs"
+        ],
+        "verified": true,
+        "attempts": 1
+      }
+    },
+    "checks": 11,
+    "durationMs": 87332,
+    "repro": {
+      "path": "whobrokeit-repro.mjs",
+      "command": "node whobrokeit-repro.mjs",
+      "code": "import { createRequire } from 'node:module'\nimport { existsSync } from 'node:fs'\nimport { pathToFileURL } from 'node:url'\nimport path from 'node:path'\n\nconst root = process.cwd()\nlet mod\nif (existsSync(path.join(root, 'index.mjs'))) {\n  mod = await import(pathToFileURL(path.join(root, 'index.mjs')).href)\n} else if (existsSync(path.join(root, 'index.js'))) {\n  mod = createRequire(import.meta.url)(path.join(root, 'index.js'))\n} else {\n  console.log('markdown-it entry point not found')\n  process.exitCode = 125\n}\n\nif (mod) {\n  const MarkdownIt = mod.default || mod\n  const md = MarkdownIt()\n  const actual = md.render('~~⚀~~one')\n  const expected = '<p><s>⚀</s>one</p>\\n'\n  if (actual === expected) {\n    process.exitCode = 0\n  } else {\n    console.log('WHOBROKEIT_BUG: expected ' + JSON.stringify(expected) + ' but got ' + JSON.stringify(actual))\n    process.exitCode = 1\n  }\n}\n",
+      "agent": "Claude Code",
+      "attempts": 1
+    },
+    "savedTest": ".git/whobrokeit/whobrokeit-repro.mjs",
+    "savedFix": ".git/whobrokeit/fix.patch"
+  }
+}

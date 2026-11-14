@@ -1,0 +1,109 @@
+{
+  "id": "express-2550",
+  "result": "correct",
+  "culprit": "566720be improve proxy trust with ip address list",
+  "fix": "verified",
+  "seconds": 118,
+  "model": "sonnet",
+  "outcome": {
+    "kind": "found",
+    "culprit": {
+      "sha": "566720be15838f3fe9b30263a7058a8b497c28f5",
+      "short": "566720be",
+      "subject": "improve proxy trust with ip address list",
+      "author": "Douglas Christopher Wilson",
+      "date": "2014-05-09T00:53:47-04:00",
+      "files": [
+        {
+          "path": "History.md",
+          "added": 8,
+          "removed": 0
+        },
+        {
+          "path": "lib/application.js",
+          "added": 8,
+          "removed": 0
+        },
+        {
+          "path": "lib/request.js",
+          "added": 41,
+          "removed": 22
+        },
+        {
+          "path": "lib/utils.js",
+          "added": 30,
+          "removed": 0
+        },
+        {
+          "path": "package.json",
+          "added": 1,
+          "removed": 0
+        },
+        {
+          "path": "test/req.host.js",
+          "added": 65,
+          "removed": 0
+        },
+        {
+          "path": "test/req.ip.js",
+          "added": 15,
+          "removed": 0
+        },
+        {
+          "path": "test/req.ips.js",
+          "added": 15,
+          "removed": 0
+        },
+        {
+          "path": "test/req.protocol.js",
+          "added": 15,
+          "removed": 0
+        }
+      ]
+    },
+    "parent": {
+      "sha": "65f13c3cc62ff2f5162df73f78b4e5e451adf3b3",
+      "short": "65f13c3c",
+      "subject": "update connect to 2.16.1"
+    },
+    "good": {
+      "sha": "eba6aa1767c4624a9bfddfd9a92c9d58367ae520",
+      "short": "eba6aa17",
+      "subject": "fix .version"
+    },
+    "bad": {
+      "sha": "eaf3318dd39a83ecfa014cbb073883c63f4ef608",
+      "short": "eaf3318d",
+      "subject": "Generate ETags for all request responses"
+    },
+    "proven": true,
+    "proof": {
+      "culprit": "bad",
+      "parent": "good"
+    },
+    "failureOutput": "WHOBROKEIT_BUG: expected the mounted app to inherit \"trust proxy\" = true, but got false (foobarquux = true)\n",
+    "explanation": {
+      "agent": "Claude Code",
+      "why": "In `lib/application.js`, `defaultConfiguration` now calls `this.set('trust proxy', false)`. That call stores `trust proxy` and the derived `trust proxy fn` as own properties of every app's `settings`, including the sub-app's. When the sub-app is mounted, its `settings.__proto__` is pointed at the parent's settings. The sub-app's own `false` values shadow the parent's `true`, so `subApp.get('trust proxy')` returns false. Before this commit nothing set a default, so the lookup fell through to the parent.",
+      "fix": {
+        "patch": "diff --git a/lib/application.js b/lib/application.js\nindex 1909fd95..86896eec 100644\n--- a/lib/application.js\n+++ b/lib/application.js\n@@ -65,6 +65,9 @@ app.defaultConfiguration = function(){\n     this.response.__proto__ = parent.response;\n     this.engines.__proto__ = parent.engines;\n     this.settings.__proto__ = parent.settings;\n+    // drop own defaults so they are inherited from the parent\n+    delete this.settings['trust proxy'];\n+    delete this.settings['trust proxy fn'];\n   });\n \n   // router\n",
+        "files": [
+          "lib/application.js"
+        ],
+        "verified": true,
+        "attempts": 1
+      }
+    },
+    "checks": 22,
+    "durationMs": 116883,
+    "repro": {
+      "path": "whobrokeit-repro.mjs",
+      "command": "node whobrokeit-repro.mjs",
+      "code": "import { createRequire } from 'node:module';\n\nconst require = createRequire(import.meta.url);\nconst express = require('./');\n\nconst app = express();\napp.set('trust proxy', true);\napp.set('foobarquux', true);\n\nconst subApp = express();\nsubApp.get('/', function (req, res) {\n  res.send('ok');\n});\n\napp.use('/', subApp);\n\nconst trust = subApp.get('trust proxy');\nconst other = subApp.get('foobarquux');\n\nif (trust !== true) {\n  console.log('WHOBROKEIT_BUG: expected the mounted app to inherit \"trust proxy\" = true, but got ' + String(trust) + ' (foobarquux = ' + String(other) + ')');\n  process.exitCode = 1;\n} else {\n  process.exitCode = 0;\n}\n",
+      "agent": "Claude Code",
+      "attempts": 1
+    },
+    "savedTest": ".git/whobrokeit/whobrokeit-repro.mjs",
+    "savedFix": ".git/whobrokeit/fix.patch"
+  }
+}

@@ -1,0 +1,84 @@
+{
+  "id": "semver-580",
+  "result": "correct",
+  "culprit": "abdd93d fix: set max lengths in regex for numeric and build identifiers (#571)",
+  "fix": "verified",
+  "seconds": 77,
+  "model": "sonnet",
+  "outcome": {
+    "kind": "found",
+    "culprit": {
+      "sha": "abdd93d55496d22e3c15a454a5cf13f101e48bce",
+      "short": "abdd93d",
+      "subject": "fix: set max lengths in regex for numeric and build identifiers (#571)",
+      "author": "Luke Karrys",
+      "date": "2023-06-22T13:06:02-07:00",
+      "files": [
+        {
+          "path": "classes/range.js",
+          "added": 3,
+          "removed": 0
+        },
+        {
+          "path": "internal/constants.js",
+          "added": 5,
+          "removed": 0
+        },
+        {
+          "path": "internal/re.js",
+          "added": 28,
+          "removed": 13
+        },
+        {
+          "path": "test/integration/whitespace.js",
+          "added": 19,
+          "removed": 9
+        }
+      ]
+    },
+    "parent": {
+      "sha": "e7b78de06eb14a7fa2075cedf9f167040d8d31af",
+      "short": "e7b78de",
+      "subject": "chore: release 7.5.2"
+    },
+    "good": {
+      "sha": "717534ee353682f3bcf33e60a8af4292626d4441",
+      "short": "717534e",
+      "subject": "fix: better handling of whitespace (#564)"
+    },
+    "bad": {
+      "sha": "4f0f6b19a54b1ba7e1c62af2dfba61f7a4fa68d5",
+      "short": "4f0f6b1",
+      "subject": "chore: fix arguments in whitespace test (#574)"
+    },
+    "proven": true,
+    "proof": {
+      "culprit": "bad",
+      "parent": "good"
+    },
+    "failureOutput": "WHOBROKEIT_BUG: expected semver.valid('0.0.0-928490632884417731e7af463c92b034d6a78268fc993bcb88a57944') to return '0.0.0-928490632884417731e7af463c92b034d6a78268fc993bcb88a57944', but got null\n",
+    "explanation": {
+      "agent": "Claude Code",
+      "why": "In `internal/re.js`, `makeSafeRegex` (called from `createToken`) now rewrites every `\\d*` and `\\d+` in the internal \"safe\" regexes to `\\d{0,16}` and `\\d{1,16}`. `NONNUMERICIDENTIFIER` is `\\d*[a-zA-Z-][a-zA-Z0-9-]*`, so it picked up the 16-digit cap on its leading digits. The prerelease `928490632884417731e7af…` starts with 18 digits before the first letter, so the safe regex no longer matches it. `valid()` therefore returns `null`, although 7.5.2 accepted it. The 16-digit limit suits numeric version components, but it should not apply to the leading digits of an alphanumeric identifier, whose length is already bounded by `MAX_LENGTH`.",
+      "fix": {
+        "patch": "diff --git a/internal/re.js b/internal/re.js\nindex 9f5e36d..9e4459c 100644\n--- a/internal/re.js\n+++ b/internal/re.js\n@@ -55,7 +55,7 @@ createToken('NUMERICIDENTIFIERLOOSE', '\\\\d+')\n // Zero or more digits, followed by a letter or hyphen, and then zero or\n // more letters, digits, or hyphens.\n \n-createToken('NONNUMERICIDENTIFIER', `\\\\d*[a-zA-Z-]${LETTERDASHNUMBER}*`)\n+createToken('NONNUMERICIDENTIFIER', `[0-9]*[a-zA-Z-]${LETTERDASHNUMBER}*`)\n \n // ## Main Version\n // Three dot-separated numeric identifiers.\n",
+        "files": [
+          "internal/re.js"
+        ],
+        "verified": true,
+        "attempts": 1
+      }
+    },
+    "checks": 10,
+    "durationMs": 71361,
+    "repro": {
+      "path": "whobrokeit-repro.mjs",
+      "command": "node whobrokeit-repro.mjs",
+      "code": "import { createRequire } from 'node:module'\nconst require = createRequire(import.meta.url)\nconst semver = require('./index.js')\n\nconst input = '0.0.0-928490632884417731e7af463c92b034d6a78268fc993bcb88a57944'\n\nif (typeof semver.valid !== 'function') {\n  console.log('semver.valid does not exist in this version')\n  process.exitCode = 125\n} else {\n  const result = semver.valid(input)\n  if (result === input) {\n    process.exitCode = 0\n  } else {\n    console.log(`WHOBROKEIT_BUG: expected semver.valid('${input}') to return '${input}', but got ${JSON.stringify(result)}`)\n    process.exitCode = 1\n  }\n}\n",
+      "agent": "Claude Code",
+      "attempts": 1
+    },
+    "savedTest": ".git/whobrokeit/whobrokeit-repro.mjs",
+    "savedFix": ".git/whobrokeit/fix.patch"
+  }
+}

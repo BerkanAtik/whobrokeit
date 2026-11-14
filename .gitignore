@@ -8,3 +8,6 @@ BASLANGIC.md
 
 # Local dev tools (demo recording)
 .dev/
+
+# Benchmark clones and cached issue text
+bench/.work/

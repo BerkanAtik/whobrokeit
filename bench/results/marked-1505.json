@@ -1,0 +1,89 @@
+{
+  "id": "marked-1505",
+  "result": "correct",
+  "culprit": "be27472a Improve worst-case performance of inline.text regex",
+  "fix": "verified",
+  "seconds": 86,
+  "model": "sonnet",
+  "outcome": {
+    "kind": "found",
+    "culprit": {
+      "sha": "be27472a8169dda7875330939f8115ab677cdc07",
+      "short": "be27472a",
+      "subject": "Improve worst-case performance of inline.text regex",
+      "author": "Anders Kaseorg",
+      "date": "2019-04-03T15:08:57-07:00",
+      "files": [
+        {
+          "path": "lib/marked.js",
+          "added": 3,
+          "removed": 6
+        },
+        {
+          "path": "test/redos/quadratic_br.js",
+          "added": 4,
+          "removed": 0
+        },
+        {
+          "path": "test/redos/quadratic_email.js",
+          "added": 4,
+          "removed": 0
+        },
+        {
+          "path": "test/specs/gfm/gfm.0.28.json",
+          "added": 1,
+          "removed": 2
+        },
+        {
+          "path": "test/specs/redos-spec.js",
+          "added": 24,
+          "removed": 0
+        }
+      ]
+    },
+    "parent": {
+      "sha": "ba1de1eaded237ce5679d8dcf616e4c7c7c7c157",
+      "short": "ba1de1ea",
+      "subject": "🗜️ minify [skip ci]"
+    },
+    "good": {
+      "sha": "c679e5edb5e5b8adc609928853ef980f06baaf18",
+      "short": "c679e5ed",
+      "subject": "Merge pull request #1421 from UziTech/release-0.6.1"
+    },
+    "bad": {
+      "sha": "0b7fc5e3420832efc1c8892d9792363a85d199a5",
+      "short": "0b7fc5e3",
+      "subject": "🗜️ minify [skip ci]"
+    },
+    "proven": true,
+    "proof": {
+      "culprit": "bad",
+      "parent": "good"
+    },
+    "failureOutput": "WHOBROKEIT_BUG: expected \"<p>A<br>B</p>\" with breaks enabled, got \"<p>A\\nB</p>\\n\"\n",
+    "explanation": {
+      "agent": "Claude Code",
+      "why": "In `lib/marked.js`, commit be27472a rewrote the `inline.text` regex so it no longer has a ` {2,}\\n` lookahead in its lazy loop. The new regex only stops before a hard line break through `[^ ](?= {2,}\\n)` or an outer alternative that is tried only after the first alternative fails. `inline.breaks` turns ` {2,}` into ` *`, so a break can have zero spaces. For `A\\nB` the lazy loop never stops before the `\\n`, because the first alternative can always reach `$`. The `text` token therefore swallows `A\\nB` whole, and `br` never gets a chance to match. The fix adds ` *\\n` as a stop condition in the lookahead group, but only for the `breaks` text regex.",
+      "fix": {
+        "patch": "diff --git a/lib/marked.js b/lib/marked.js\nindex 86286794..53bafe97 100644\n--- a/lib/marked.js\n+++ b/lib/marked.js\n@@ -634,7 +634,7 @@ inline.gfm.url = edit(inline.gfm.url, 'i')\n \n inline.breaks = merge({}, inline.gfm, {\n   br: edit(inline.br).replace('{2,}', '*').getRegex(),\n-  text: edit(inline.gfm.text).replace(/\\{2,\\}/g, '*').getRegex()\n+  text: edit(inline.gfm.text).replace(/\\{2,\\}/g, '*').replace('|$)', '|$| *\\\\n)').getRegex()\n });\n \n /**\n",
+        "files": [
+          "lib/marked.js"
+        ],
+        "verified": true,
+        "attempts": 1
+      }
+    },
+    "checks": 16,
+    "durationMs": 83778,
+    "repro": {
+      "path": "whobrokeit-repro.mjs",
+      "command": "node whobrokeit-repro.mjs",
+      "code": "import { createRequire } from 'node:module';\nconst require = createRequire(import.meta.url);\n\nconst marked = require('./lib/marked.js');\n\nconst html = marked('A\\nB', { breaks: true });\nif (!/<p>A<br\\s*\\/?>\\s*B<\\/p>/.test(html)) {\n  console.log('WHOBROKEIT_BUG: expected \"<p>A<br>B</p>\" with breaks enabled, got ' + JSON.stringify(html));\n  process.exitCode = 1;\n} else {\n  process.exitCode = 0;\n}\n",
+      "agent": "Claude Code",
+      "attempts": 1
+    },
+    "savedTest": ".git/whobrokeit/whobrokeit-repro.mjs",
+    "savedFix": ".git/whobrokeit/fix.patch"
+  }
+}

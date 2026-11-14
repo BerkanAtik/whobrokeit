@@ -1,0 +1,89 @@
+{
+  "id": "fastify-5089",
+  "result": "wrong",
+  "culprit": "5bf0f4fd fix: onRoute hook should not be called when it registered after route (#4052)",
+  "fix": "verified",
+  "seconds": 199,
+  "model": "sonnet",
+  "outcome": {
+    "kind": "found",
+    "culprit": {
+      "sha": "5bf0f4fd4ea5f6ab56ab7dba1de24455a128a0bd",
+      "short": "5bf0f4fd",
+      "subject": "fix: onRoute hook should not be called when it registered after route (#4052)",
+      "author": "KaKa",
+      "date": "2022-06-24T01:25:39+08:00",
+      "files": [
+        {
+          "path": "lib/context.js",
+          "added": 5,
+          "removed": 2
+        },
+        {
+          "path": "lib/route.js",
+          "added": 39,
+          "removed": 29
+        },
+        {
+          "path": "lib/symbols.js",
+          "added": 2,
+          "removed": 1
+        },
+        {
+          "path": "test/hooks.test.js",
+          "added": 21,
+          "removed": 0
+        },
+        {
+          "path": "test/pretty-print.test.js",
+          "added": 3,
+          "removed": 3
+        }
+      ]
+    },
+    "parent": {
+      "sha": "bd1f99cb09409d9566aa5e6a9d670f592801f655",
+      "short": "bd1f99cb",
+      "subject": "Add plugin lcache by alphabetic order (#4082)"
+    },
+    "good": {
+      "sha": "73bea70d388db1e6b85601e154caaa51dde0d403",
+      "short": "73bea70d",
+      "subject": "test: fix flaky test (#4051)"
+    },
+    "bad": {
+      "sha": "04cc8c1f8a9b561cf14c7f569461bc649c16c1a1",
+      "short": "04cc8c1f",
+      "subject": "fix: citgm (#5075)"
+    },
+    "proven": true,
+    "proof": {
+      "culprit": "bad",
+      "parent": "good"
+    },
+    "failureOutput": "WHOBROKEIT_BUG: expected routes GET + [POST, DELETE, PUT, HEAD, OPTIONS] on the same url to register fine, but got: Method 'HEAD' already declared for route '/proxy/*' with constraints '{}'\n",
+    "explanation": {
+      "agent": "Claude Code",
+      "why": "In `lib/route.js`, `addNewRoute` is supposed to remove the HEAD route that Fastify auto-created for a GET route, so a user-defined HEAD route can replace it. It calls `router.off('HEAD', opts.url, { constraints })`. find-my-way's `off(method, path, constraints)` takes the constraints object directly, not an `{ constraints }` wrapper like `on()` does. The wrapped object is read as a constraint named \"constraints\", so no route matches and the auto-generated HEAD route is never removed. The later `router.on([... 'HEAD' ...])` then hits the duplicate-method error, and because `opts.method` is an array the friendly-error check doesn't match, so the raw error is rethrown. I could not run the test or inspect find-my-way 7.x here, since the installed copy is 6.4.0, so this diagnosis comes from reading the code.",
+      "fix": {
+        "patch": "diff --git a/lib/route.js b/lib/route.js\nindex 7c097678..2c3b890e 100644\n--- a/lib/route.js\n+++ b/lib/route.js\n@@ -327,7 +327,7 @@ function buildRouting (options) {\n \n       // remove the head route created by fastify\n       if (hasHEADHandler && !context[kRouteByFastify] && headHandler.store[kRouteByFastify]) {\n-        router.off('HEAD', opts.url, { constraints })\n+        router.off('HEAD', opts.url, constraints)\n       }\n \n       try {\n",
+        "files": [
+          "lib/route.js"
+        ],
+        "verified": true,
+        "attempts": 1
+      }
+    },
+    "checks": 22,
+    "durationMs": 192018,
+    "repro": {
+      "path": "whobrokeit-repro.mjs",
+      "command": "node whobrokeit-repro.mjs",
+      "code": "import fastify from './fastify.js'\n\nconst app = fastify()\nconst handler = async () => 'ok'\n\ntry {\n  app.route({ method: 'GET', url: '/proxy/*', handler })\n  app.route({\n    method: ['POST', 'DELETE', 'PUT', 'HEAD', 'OPTIONS'],\n    url: '/proxy/*',\n    handler\n  })\n  await app.ready()\n} catch (err) {\n  if (/Method 'HEAD' already declared/.test(String(err && err.message))) {\n    console.log('WHOBROKEIT_BUG: expected routes GET + [POST, DELETE, PUT, HEAD, OPTIONS] on the same url to register fine, but got: ' + err.message)\n    process.exitCode = 1\n  } else {\n    throw err\n  }\n}\n\nif (!process.exitCode) {\n  await app.close()\n  process.exitCode = 0\n}\n",
+      "agent": "Claude Code",
+      "attempts": 1
+    },
+    "savedTest": ".git/whobrokeit/whobrokeit-repro.mjs",
+    "savedFix": ".git/whobrokeit/fix.patch"
+  }
+}
