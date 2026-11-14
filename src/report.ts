@@ -1,4 +1,4 @@
-import type { CommitInfo, EngineEvent, Explanation, Outcome, Phase, ReproInfo, Verdict } from './engine.js';
+import type { CommitInfo, CommitRef, EngineEvent, Explanation, Outcome, Phase, ReproInfo, Verdict } from './engine.js';
 
 export interface Palette {
   bold: (s: string) => string;
@@ -175,68 +175,84 @@ export function renderOutcome(outcome: Outcome, c: Palette, columns = 100, saved
   const max = Math.min(columns, 100);
   const footer = c.dim(`${outcome.checks} check${outcome.checks === 1 ? '' : 's'} · ${formatDuration(outcome.durationMs)}`);
 
+  if (outcome.kind === 'found') return renderFound(outcome, c, max, footer, saved);
+
+  const { headline, detail, commits = [], output } = notice(outcome);
+  const lines = [...detail, ...commits.map((x) => `  ${c.yellow(x.short)}  ${x.subject}`)];
+  const shown = excerpt(output);
+  const tail = shown.length > 0 ? `\n${c.dim('Test output:')}\n${shown.map((l) => c.dim(`  ${l}`)).join('\n')}\n` : '';
+  return `\n${c.yellow(headline)}\n${lines.join('\n')}\n${tail}\n${footer}\n`;
+}
+
+interface Notice {
+  headline: string;
+  detail: string[];
+  commits?: CommitRef[];
+  /** Raw test output, if there is any worth showing. */
+  output: string;
+}
+
+/** What to tell the user when no culprit was found. */
+function notice(outcome: Exclude<Outcome, { kind: 'found' }>): Notice {
   switch (outcome.kind) {
-    case 'found':
-      return renderFound(outcome, c, max, footer, saved);
     case 'not-reproduced':
-      return message(
-        c,
-        c.yellow('The test passes at ' + outcome.bad.short + ', so there is no bug to hunt.'),
-        'whobrokeit needs a command that fails while the bug is present. Check the test really catches it.',
-        excerpt(outcome.output),
-      );
+      return {
+        headline: `The test passes at ${outcome.bad.short}, so there is no bug to hunt.`,
+        detail: ['whobrokeit needs a command that fails while the bug is present. Check the test really catches it.'],
+        output: outcome.output,
+      };
     case 'cannot-test':
-      return message(
-        c,
-        c.yellow(`Could not run the test at ${outcome.bad.short}: ${outcome.reason}.`),
-        'Fix the setup (or pass --setup / --no-setup) and try again.',
-        excerpt(outcome.output),
-      );
+      return {
+        headline: `Could not run the test at ${outcome.bad.short}: ${outcome.reason}.`,
+        detail: ['Fix the setup (or pass --setup / --no-setup) and try again.'],
+        output: outcome.output,
+      };
     case 'no-good-commit':
-      return message(
-        c,
-        c.yellow(`The test fails all the way back to ${outcome.oldest.short}, the oldest commit.`),
-        outcome.shallow
-          ? 'This is a shallow clone. Run `git fetch --unshallow` and try again.'
-          : outcome.untestable
-            ? 'It fails wherever it can run, and older commits cannot run it at all. If you know a commit where it worked, try --good <commit>.'
-            : 'Either the bug was always there, or the test cannot run on old code (it may use something that did not exist yet). Try --good <commit>.',
-      );
+      return {
+        headline: `The test fails all the way back to ${outcome.oldest.short}, the oldest commit.`,
+        detail: [
+          outcome.shallow
+            ? 'This is a shallow clone. Run `git fetch --unshallow` and try again.'
+            : outcome.untestable
+              ? 'It fails wherever it can run, and older commits cannot run it at all. If you know a commit where it worked, try --good <commit>.'
+              : 'Either the bug was always there, or the test cannot run on old code (it may use something that did not exist yet). Try --good <commit>.',
+        ],
+        output: '',
+      };
     case 'good-fails':
-      return message(
-        c,
-        c.yellow(`The test also fails at --good ${outcome.good.short}.`),
-        'Pick an older commit where it really worked, or leave out --good and let whobrokeit find one.',
-        excerpt(outcome.output),
-      );
+      return outcome.verdict === 'skip'
+        ? {
+            headline: `The test cannot run at --good ${outcome.good.short}${outcome.reason ? ` (${outcome.reason})` : ''}.`,
+            detail: ['Pick a commit where the test can run and passes, or leave out --good and let whobrokeit find one.'],
+            output: outcome.output,
+          }
+        : {
+            headline: `The test also fails at --good ${outcome.good.short}.`,
+            detail: ['Pick an older commit where it really worked, or leave out --good and let whobrokeit find one.'],
+            output: outcome.output,
+          };
     case 'ambiguous':
-      return message(
-        c,
-        c.yellow(`Narrowed it down to ${outcome.candidates.length} commits, but some of them could not be tested:`),
-        outcome.candidates.map((x) => `  ${c.yellow(x.short)}  ${x.subject}`).join('\n'),
-      );
+      return {
+        headline: `Narrowed it down to ${outcome.candidates.length} commits, but some of them could not be tested:`,
+        detail: [],
+        commits: outcome.candidates,
+        output: '',
+      };
     case 'no-repro': {
       const last = outcome.attempts.at(-1);
       const advice =
         'Say what you did, what you expected and what happened instead, then try again. Or pass your own test with --test.';
-      return message(
-        c,
-        c.yellow(
-          outcome.gaveUp
-            ? `${outcome.agent} could not write a test for this bug at ${outcome.bad.short}.`
-            : `Could not reproduce the bug at ${outcome.bad.short}.`,
-        ),
-        outcome.gaveUp
-          ? `It said: ${outcome.reason}\n${advice}`
-          : `${outcome.reason}${last ? ` The last one: ${last.problem}` : ''}\n${advice}`,
-        last?.output ? excerpt(last.output) : [],
-      );
+      return {
+        headline: outcome.gaveUp
+          ? `${outcome.agent} could not write a test for this bug at ${outcome.bad.short}.`
+          : `Could not reproduce the bug at ${outcome.bad.short}.`,
+        detail: [
+          outcome.gaveUp ? `It said: ${outcome.reason}` : `${outcome.reason}${last ? ` The last one: ${last.problem}` : ''}`,
+          advice,
+        ],
+        output: last?.output ?? '',
+      };
     }
-  }
-
-  function message(p: Palette, headline: string, detail: string, output: string[] = []): string {
-    const tail = output.length > 0 ? `\n${p.dim('Test output:')}\n${output.map((l) => p.dim(`  ${l}`)).join('\n')}\n` : '';
-    return `\n${headline}\n${detail}\n${tail}\n${footer}\n`;
   }
 }
 
@@ -376,6 +392,8 @@ export function excerpt(output: string, max = 8): string[] {
   return lines.slice(from, from + max);
 }
 
+const MAX_REPORT_FILES = 20;
+
 /** A Markdown report, for issues and PRs. */
 export function toMarkdown(outcome: Outcome, testCommand: string): string {
   const command = outcome.repro?.command ?? testCommand;
@@ -384,7 +402,7 @@ export function toMarkdown(outcome: Outcome, testCommand: string): string {
     ? [
         `## The test ${outcome.repro.agent} wrote`,
         '',
-        `\`${outcome.repro.path}\`, run with \`${outcome.repro.command}\`. It fails at the culprit and passes at its parent.`,
+        `\`${outcome.repro.path}\`, run with \`${outcome.repro.command}\`.${outcome.kind === 'found' ? ' It fails at the culprit and passes at its parent.' : ''}`,
         '',
         `${fence(outcome.repro.code)}${fenceLanguage(outcome.repro.path)}`,
         outcome.repro.code.trimEnd(),
@@ -393,15 +411,28 @@ export function toMarkdown(outcome: Outcome, testCommand: string): string {
       ].join('\n')
     : '';
   if (outcome.kind !== 'found') {
-    const plain = renderOutcome(outcome, palette(false)).trim();
-    return `# whobrokeit report\n\n${plain}\n\n${meta}\n`;
+    const { headline, detail, commits = [], output } = notice(outcome);
+    const shown = excerpt(output, 30).join('\n');
+    return [
+      '# whobrokeit report',
+      '',
+      `**${headline}**`,
+      '',
+      ...detail.flatMap((line) => [line, '']),
+      ...(commits.length > 0 ? [...commits.map((x) => `- \`${x.short}\` ${x.subject}`), ''] : []),
+      ...(shown ? ['## Test output', '', `${fence(shown)}text`, shown, fence(shown), ''] : []),
+      ...(reproSection ? [reproSection] : []),
+      meta,
+      '',
+    ].join('\n');
   }
 
   const { culprit, parent } = outcome;
   const mark = (v: Verdict): string => (v === 'good' ? '✓ works' : v === 'bad' ? '✗ broken' : '↷ skipped');
   const files = culprit.files
-    .map((f) => `- \`${f.path}\` ${f.added === null ? '(binary)' : `+${f.added} −${f.removed}`}`)
-    .join('\n');
+    .slice(0, MAX_REPORT_FILES)
+    .map((f) => `- \`${f.path}\` ${f.added === null ? '(binary)' : `+${f.added} −${f.removed}`}`);
+  if (culprit.files.length > MAX_REPORT_FILES) files.push(`- _and ${culprit.files.length - MAX_REPORT_FILES} more files_`);
   const output = excerpt(outcome.failureOutput, 30).join('\n');
   const explanation = outcome.explanation;
   const explainSection: string[] = [];
@@ -427,6 +458,9 @@ export function toMarkdown(outcome: Outcome, testCommand: string): string {
     `**Introduced by** \`${culprit.short}\` ${culprit.subject}`,
     `**Author** ${culprit.author}, ${culprit.date.slice(0, 10)} (${timeAgo(culprit.date)})`,
     '',
+    // Right under the commit they belong to: further down they read as the size of the fix.
+    ...(files.length > 0 ? [`Files changed in \`${culprit.short}\`:`, '', ...files] : ['_It changed no files (a merge commit?)._']),
+    '',
     '## Proof',
     '',
     '| Commit | Result |',
@@ -436,10 +470,6 @@ export function toMarkdown(outcome: Outcome, testCommand: string): string {
     '',
     ...(outcome.proven ? [] : ['> The re-runs disagreed with the bisect. The test may be flaky.', '']),
     ...explainSection,
-    '## Files changed',
-    '',
-    files || '_No file changes (merge commit?)._',
-    '',
     '## Test output at the culprit',
     '',
     // The output may contain a code fence of its own (a Markdown library's tests, say).
@@ -447,7 +477,7 @@ export function toMarkdown(outcome: Outcome, testCommand: string): string {
     output,
     fence(output),
     '',
-    reproSection,
+    ...(reproSection ? [reproSection] : []),
     meta,
     '',
   ].join('\n');

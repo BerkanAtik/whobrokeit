@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, symlink } from 'node:fs/promises';
+import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, test } from 'node:test';
@@ -8,7 +8,7 @@ import { DEMO_REPRO, DEMO_TEST, createDemoRepo } from '../src/demo.js';
 import { findCulprit } from '../src/engine.js';
 import { runCommand } from '../src/exec.js';
 import { git } from '../src/git.js';
-import { colorFor, excerpt, timeAgo } from '../src/report.js';
+import { colorFor, excerpt, palette, renderOutcome, timeAgo, toMarkdown } from '../src/report.js';
 
 let repo: string;
 
@@ -44,6 +44,38 @@ test('works with an explicit --good commit', async () => {
   if (outcome.kind === 'found') assert.equal(outcome.culprit.subject, 'refactor: simplify subtotal with reduce');
 });
 
+test('the report lists the files of the culprit next to it, not under the fix', async () => {
+  const outcome = await findCulprit({ cwd: repo, test: DEMO_TEST, withFiles: [DEMO_REPRO], good: 'HEAD~20' });
+  assert.equal(outcome.kind, 'found');
+  if (outcome.kind !== 'found') return;
+  const markdown = toMarkdown(outcome, DEMO_TEST);
+  const files = markdown.indexOf(`Files changed in \`${outcome.culprit.short}\`:\n\n- \`src/cart.js\` +1 −5\n`);
+  assert.ok(files > markdown.indexOf('**Author**') && files < markdown.indexOf('## Proof'), markdown);
+});
+
+test('file names outside ASCII are shown as they are', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'whobrokeit-names-'));
+  const commit = async (flag: string, file?: string): Promise<void> => {
+    await writeFile(join(dir, 'flag.txt'), flag);
+    if (file) await writeFile(join(dir, file), 'x\n');
+    await git(['add', '-A'], dir);
+    await git(['-c', 'user.name=T', '-c', 'user.email=t@example.com', 'commit', '-q', '-m', flag], dir);
+  };
+  try {
+    await git(['init', '-q'], dir);
+    await commit('fine');
+    await commit('broken', 'çay.txt');
+    await commit('broken still');
+    const test = `node -e "process.exit(require('fs').readFileSync('flag.txt','utf8').startsWith('broken')?1:0)"`;
+    const outcome = await findCulprit({ cwd: dir, test });
+    assert.equal(outcome.kind, 'found');
+    if (outcome.kind !== 'found') return;
+    assert.deepEqual(outcome.culprit.files.map((f) => f.path).sort(), ['flag.txt', 'çay.txt']);
+  } finally {
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
 test('works when the repository is reached through a link', async () => {
   // As on macOS, where /tmp is a symlink, while git reports the real path.
   const link = `${repo}-link`;
@@ -59,6 +91,10 @@ test('works when the repository is reached through a link', async () => {
 test('says so when the test already passes', async () => {
   const outcome = await findCulprit({ cwd: repo, test: 'node -e "process.exit(0)"' });
   assert.equal(outcome.kind, 'not-reproduced');
+  // A report with no culprit is still Markdown: one headline, the facts once.
+  const markdown = toMarkdown(outcome, 'node -e "process.exit(0)"');
+  assert.match(markdown, /^# whobrokeit report\n\n\*\*The test passes at [0-9a-f]+, so there is no bug to hunt\.\*\*\n/);
+  assert.equal(markdown.match(/1 checks?/g)?.length, 1, markdown);
 });
 
 test('says so when nothing in history works', async () => {
@@ -69,6 +105,11 @@ test('says so when nothing in history works', async () => {
 test('says so when the given good commit is broken too', async () => {
   const outcome = await findCulprit({ cwd: repo, test: 'node -e "process.exit(1)"', good: 'HEAD~3' });
   assert.equal(outcome.kind, 'good-fails');
+  if (outcome.kind !== 'good-fails') return;
+  assert.match(renderOutcome(outcome, palette(false)), /The test also fails at --good/);
+  // A test that cannot run there did not fail there.
+  const skipped = renderOutcome({ ...outcome, verdict: 'skip', reason: 'test crashed' }, palette(false));
+  assert.match(skipped, /The test cannot run at --good [0-9a-f]+ \(test crashed\)\./);
 });
 
 test('a --good or --bad that starts with a dash is never given to git', async () => {

@@ -56,6 +56,9 @@ const DEPENDENCY_FILES = [
   'go.sum',
 ];
 
+/** Installing a large project takes longer than any one test should. */
+const MIN_SETUP_TIMEOUT_MS = 15 * 60 * 1000;
+
 const hash = (data: string | Buffer): string => createHash('sha1').update(data).digest('hex');
 
 /**
@@ -122,10 +125,11 @@ export class Sandbox {
       const setup = await this.pendingSetup();
       if (setup) {
         onSetup?.(setup.command);
-        const result = await runCommand(setup.command, this.dir, this.timeoutMs, { untrusted: true });
+        const timeoutMs = Math.max(this.timeoutMs, MIN_SETUP_TIMEOUT_MS);
+        const result = await runCommand(setup.command, this.dir, timeoutMs, { untrusted: true });
         if (result.code !== 0) {
           this.installedKey = null;
-          return { verdict: 'skip', run: result, reason: 'dependencies failed to install' };
+          return { verdict: 'skip', run: result, reason: result.timedOut ? 'installing dependencies timed out' : 'dependencies failed to install' };
         }
         this.installedKey = setup.key;
       }

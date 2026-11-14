@@ -155,7 +155,8 @@ export type Outcome =
       /** Some older commits could not run the test at all. */
       untestable: boolean;
     } & Stats)
-  | ({ kind: 'good-fails'; good: CommitRef; output: string } & Stats)
+  /** The test fails at the given --good commit (`bad`), or cannot run there (`skip`). */
+  | ({ kind: 'good-fails'; good: CommitRef; verdict: 'bad' | 'skip'; reason?: string; output: string } & Stats)
   | ({ kind: 'ambiguous'; candidates: CommitRef[] } & Stats)
   | ({
       kind: 'no-repro';
@@ -286,7 +287,7 @@ export async function findCulprit(opts: EngineOptions): Promise<Outcome> {
         repro = { ...candidate, agent, attempts: n };
         return undefined;
       }
-      if (evaluation.reason === 'dependencies failed to install') {
+      if (evaluation.reason?.includes('dependencies')) {
         return { kind: 'cannot-test', bad, output: evaluation.run?.output ?? '', reason: evaluation.reason, ...stats() };
       }
       attempts.push({ repro: candidate, problem: explainMiss(evaluation.run, timeoutMs), output: evaluation.run?.output });
@@ -408,7 +409,14 @@ export async function findCulprit(opts: EngineOptions): Promise<Outcome> {
     if (givenGood) {
       const evaluation = await check('find-good', givenGood, opts.good);
       if (evaluation.verdict !== 'good') {
-        return { kind: 'good-fails', good: await ref(givenGood), output: evaluation.run?.output ?? '', ...stats() };
+        return {
+          kind: 'good-fails',
+          good: await ref(givenGood),
+          verdict: evaluation.verdict,
+          ...(evaluation.reason && { reason: evaluation.reason }),
+          output: evaluation.run?.output ?? '',
+          ...stats(),
+        };
       }
       good = givenGood;
     } else {
@@ -559,7 +567,8 @@ async function commitInfo(repoRoot: string, sha: string, parent: string): Promis
   const [full, short, subject, author, email, date] = (
     await git(['show', '-s', '--format=%H%x1f%h%x1f%s%x1f%an%x1f%ae%x1f%aI', sha], repoRoot)
   ).split('\x1f');
-  const numstat = await git(['diff', '--numstat', parent, sha], repoRoot);
+  // By default git prints a non-ASCII file name as octal escapes inside quotes.
+  const numstat = await git(['-c', 'core.quotePath=false', 'diff', '--numstat', parent, sha], repoRoot);
   const files = numstat
     ? numstat.split('\n').map((line) => {
         const [added, removed, ...path] = line.split('\t');

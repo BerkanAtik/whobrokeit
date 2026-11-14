@@ -168,13 +168,15 @@ async function main(argv: string[]): Promise<number> {
   }
 
   const controller = new AbortController();
-  const onSigint = (): void => {
+  const onSignal = (): void => {
     if (controller.signal.aborted) process.exit(130);
     process.stderr.write('\nStopping and cleaning up…\n');
     controller.abort();
     killActiveCommands();
   };
-  process.on('SIGINT', onSigint);
+  // Also when a CI job is cancelled or the terminal is closed, so no worktree is left behind.
+  const signals = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const;
+  for (const signal of signals) process.on(signal, onSignal);
 
   if (values.explain && values['no-explain']) throw new UserError('Give either --explain or --no-explain, not both.');
   const wantsExplain = bug ? !values['no-explain'] : Boolean(values.explain);
@@ -220,7 +222,7 @@ async function main(argv: string[]): Promise<number> {
     if (controller.signal.aborted) return 130;
     throw err;
   } finally {
-    process.off('SIGINT', onSigint);
+    for (const signal of signals) process.off(signal, onSignal);
   }
 }
 
