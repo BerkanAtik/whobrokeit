@@ -60,7 +60,8 @@ for (const c of cases) {
   const started = Date.now();
   const run = spawnSync(
     process.execPath,
-    [cli, bug, '--json', ...(model ? ['--model', model] : []), ...(agent ? ['--agent', agent] : [])],
+    // The issue text after `--`, so a title that starts with a dash stays a bug description.
+    [cli, '--json', ...(model ? ['--model', model] : []), ...(agent ? ['--agent', agent] : []), '--', bug],
     { cwd: repo, encoding: 'utf8', maxBuffer: 1 << 28, timeout: 45 * 60 * 1000 },
   );
   const seconds = Math.round((Date.now() - started) / 1000);

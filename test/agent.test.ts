@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { pickAgent, type Agent } from '../src/agent.js';
 import { DEMO_BUG_REPORT, DEMO_REPRO, DEMO_TEST, createDemoRepo } from '../src/demo.js';
 import { UserError, findCulprit, type EngineEvent } from '../src/engine.js';
-import type { RunResult } from '../src/exec.js';
-import { parseExplanation } from '../src/explain.js';
+import { runCommand, type RunResult } from '../src/exec.js';
+import { applyEdits, parseExplanation } from '../src/explain.js';
 import { git } from '../src/git.js';
 import { toMarkdown } from '../src/report.js';
 import { buildPrompt, classifyRepro, normalizeReproPath, parseReply } from '../src/repro.js';
@@ -113,6 +114,22 @@ test('says so when the agent finds nothing to reproduce', async () => {
   assert.equal(outcome.gaveUp, true);
   assert.equal(outcome.reason, 'The report does not say what went wrong.');
   assert.equal(outcome.checks, 0);
+  // There is no test to name, and an empty code span would show up as stray backticks.
+  const markdown = toMarkdown(outcome, '');
+  assert.ok(!markdown.includes('``'), markdown);
+  assert.match(markdown, /^_0 checks · /m);
+});
+
+test('a test path the commit cannot hold costs one attempt, not the run', async () => {
+  // src/cart.js is a file, so nothing can be written under it.
+  const agent = scripted(
+    answer('src/cart.js/repro.mjs', REPRO, 'node src/cart.js/repro.mjs'),
+    answer('whobrokeit-repro.mjs', REPRO),
+  );
+  const outcome = await findCulprit({ cwd: repo, describe: { bug: DEMO_BUG_REPORT, agent } });
+  assert.equal(outcome.kind, 'found');
+  assert.equal(outcome.repro?.attempts, 2);
+  assert.match(agent.prompts[1], /it could not be run: cannot write src\/cart\.js\/repro\.mjs at this commit/);
 });
 
 test('gives up after three tests that all pass', async () => {
@@ -201,18 +218,102 @@ test('a fix may not touch the tests', async () => {
   assert.match(outcome.explanation?.note ?? '', /did not suggest a fix: Not sure/);
 });
 
-test('a failing agent does not lose the culprit', async () => {
-  const broken: Agent = {
-    label: 'Broken Agent',
-    async ask() {
-      throw new UserError('Broken Agent did not answer within 15 minutes.');
-    },
-  };
-  const outcome = await findCulprit({ cwd: repo, test: DEMO_TEST, withFiles: [DEMO_REPRO], explain: { agent: broken } });
-  assert.equal(outcome.kind, 'found');
-  if (outcome.kind !== 'found') return;
-  assert.equal(outcome.proven, true);
-  assert.match(outcome.explanation?.note ?? '', /did not answer/);
+test('a failing agent does not lose the culprit, whatever it throws', async () => {
+  for (const error of [new UserError('Broken Agent did not answer within 15 minutes.'), new Error('socket hang up')]) {
+    const broken: Agent = {
+      label: 'Broken Agent',
+      async ask() {
+        throw error;
+      },
+    };
+    const outcome = await findCulprit({
+      cwd: repo,
+      test: DEMO_TEST,
+      withFiles: [DEMO_REPRO],
+      good: 'HEAD~20',
+      explain: { agent: broken },
+    });
+    assert.equal(outcome.kind, 'found');
+    if (outcome.kind !== 'found') return;
+    assert.equal(outcome.proven, true);
+    assert.ok(outcome.explanation?.note?.includes(error.message), outcome.explanation?.note);
+  }
+});
+
+test('the saved fix applies with git apply, even with diff.noprefix set', async () => {
+  await git(['config', 'diff.noprefix', 'true'], repo);
+  try {
+    const agent = scripted(explainReply('sum + item.price * item.qty, 0'));
+    const outcome = await findCulprit({
+      cwd: repo,
+      test: DEMO_TEST,
+      withFiles: [DEMO_REPRO],
+      good: 'HEAD~20',
+      explain: { agent },
+    });
+    assert.equal(outcome.kind, 'found');
+    if (outcome.kind !== 'found') return;
+    const patch = outcome.explanation?.fix?.patch ?? '';
+    assert.match(patch, /^diff --git a\/src\/cart\.js b\/src\/cart\.js$/m);
+    const file = join(repo, '.git', 'test-fix.patch');
+    await writeFile(file, patch);
+    await git(['apply', '--check', file], repo);
+  } finally {
+    await git(['config', '--unset', 'diff.noprefix'], repo);
+  }
+});
+
+test('a fix may only change files git tracks', async () => {
+  // An edit in node_modules can make the test pass and still leave nothing in the patch.
+  const dir = await mkdtemp(join(tmpdir(), 'whobrokeit-untracked-'));
+  try {
+    const file = join(dir, 'node_modules', 'dep', 'index.js');
+    await mkdir(join(dir, 'node_modules', 'dep'), { recursive: true });
+    await writeFile(file, 'module.exports = 1;\n');
+    const result = await applyEdits(dir, [{ path: 'node_modules/dep/index.js', find: '1', replace: '2' }], [], async () => false);
+    assert.ok('problem' in result && /is not part of the repository/.test(result.problem), JSON.stringify(result));
+    assert.equal(await readFile(file, 'utf8'), 'module.exports = 1;\n');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('from a subfolder, the apply command it prints really applies the fix', async () => {
+  // `git apply` in a subfolder skips files outside it and still exits 0.
+  const dir = await mkdtemp(join(tmpdir(), 'whobrokeit-cli-'));
+  const out = await mkdtemp(join(tmpdir(), 'whobrokeit-report-'));
+  const saved = { key: process.env.ANTHROPIC_API_KEY, token: process.env.GITHUB_TOKEN };
+  process.env.ANTHROPIC_API_KEY = 'sk-fake'; // the stand-in agent checks that it gets the key
+  delete process.env.GITHUB_TOKEN;
+  try {
+    await createDemoRepo(dir);
+    await rm(join(dir, DEMO_REPRO));
+    const cli = fileURLToPath(new URL('../src/cli.ts', import.meta.url));
+    const agent = fileURLToPath(new URL('./fixtures/fake-agent.mjs', import.meta.url));
+    // The report folder does not exist yet.
+    const report = join(out, 'nested', 'report.md');
+    const run = await runCommand(
+      `node --import ${import.meta.resolve('tsx')} "${cli}" --agent "node \\"${agent}\\"" --report "${report}" "${DEMO_BUG_REPORT}"`,
+      join(dir, 'src'),
+      180_000,
+    );
+    assert.equal(run.code, 0, run.output);
+    const apply = /Apply it: (.+)/.exec(run.output)?.[1].trim() ?? '';
+    assert.equal(apply, 'git -C .. apply .git/whobrokeit/fix.patch', run.output);
+    assert.match(run.output, /wrote \(\d+ lines\): \.\.\/\.git\/whobrokeit\/whobrokeit-repro\.mjs\n/);
+    assert.match(run.output, /It runs from the repository root as whobrokeit-repro\.mjs: node whobrokeit-repro\.mjs/);
+    const applied = await runCommand(apply, join(dir, 'src'), 30_000);
+    assert.equal(applied.code, 0, applied.output);
+    assert.equal(await git(['status', '--porcelain'], dir), ' M src/cart.js');
+    assert.match(await readFile(report, 'utf8'), /^# whobrokeit report\n\n\*\*Introduced by\*\* `[0-9a-f]+` refactor: simplify subtotal with reduce/);
+  } finally {
+    for (const [name, value] of [['ANTHROPIC_API_KEY', saved.key], ['GITHUB_TOKEN', saved.token]] as const) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    await rm(out, { recursive: true, force: true });
+  }
 });
 
 test('the working copy is still untouched', async () => {
@@ -270,6 +371,8 @@ test('buildPrompt includes what happened on earlier attempts', () => {
   assert.match(prompt, /Result at abc1234: it crashed\./);
   assert.match(prompt, /ReferenceError: x/);
   assert.match(prompt, /attempt 2 of 3/);
+  // Build output is not refreshed per commit, so a built project's test has to build.
+  assert.match(prompt, /start the command with the build, for example `npm run build && node whobrokeit-repro\.mjs`/);
 });
 
 test('the agent may not write into .git, in any spelling', () => {
@@ -285,5 +388,25 @@ test('test output with a code fence of its own cannot break the report', async (
   if (outcome.kind !== 'found') return;
   const markdown = toMarkdown({ ...outcome, failureOutput: 'WHOBROKEIT_BUG: got\n```\n# not a heading\n' }, DEMO_TEST);
   assert.ok(markdown.includes('\n````text\nWHOBROKEIT_BUG: got\n```\n# not a heading\n````\n'), markdown);
+});
+
+test('the report pings nobody, and one huge output line cannot swamp it', async () => {
+  const outcome = await findCulprit({ cwd: repo, test: DEMO_TEST, withFiles: [DEMO_REPRO], good: 'HEAD~20' });
+  assert.equal(outcome.kind, 'found');
+  if (outcome.kind !== 'found') return;
+  const markdown = toMarkdown(
+    {
+      ...outcome,
+      failureOutput: `WHOBROKEIT_BUG: ${'x'.repeat(5000)}\n`,
+      explanation: { agent: 'Fake Agent', why: 'Since @alice bumped `@scope/pkg`, (@bob) and mail me@example.com.' },
+    },
+    'node -e "console.log(`x`)"',
+  );
+  // GitHub notifies "@name" outside code; a zero-width space stops that and stays invisible.
+  const at = `@${String.fromCharCode(0x200b)}`;
+  assert.ok(markdown.includes(`Since ${at}alice bumped \`@scope/pkg\`, (${at}bob) and mail me@example.com.`), markdown);
+  assert.ok(!/x{401}/.test(markdown), 'a 5000-character line went into the report whole');
+  // A command with backticks of its own still reads as code.
+  assert.ok(markdown.includes('_Test: ``node -e "console.log(`x`)"`` · '), markdown);
 });
 

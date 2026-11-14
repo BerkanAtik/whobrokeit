@@ -1,6 +1,6 @@
 {
   "name": "whobrokeit",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Find the commit that broke it, and prove it.",
   "type": "module",
   "bin": {
@@ -21,10 +21,13 @@
   },
   "keywords": [
     "git",
+    "git-bisect",
     "bisect",
     "regression",
     "debugging",
     "cli",
+    "github-action",
+    "ai",
     "claude-code",
     "codex"
   ],

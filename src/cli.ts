@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { readFileSync } from 'node:fs';
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { parseArgs } from 'node:util';
 import { pickAgent } from './agent.js';
 import { DEMO_BUG_REPORT, DEMO_REPRO, DEMO_TEST, createDemoRepo } from './demo.js';
@@ -52,7 +52,7 @@ Exit codes
 
 /**
  * Keeps the agent-written test and the fix in .git/whobrokeit/, next to git's own state: out
- * of the working copy, but easy to open, copy or `git apply`. Returns a path to show, or
+ * of the working copy, but easy to open, copy or `git apply`. Returns where it went, or
  * undefined if it could not be saved.
  */
 async function saveFile(cwd: string, name: string, content: string): Promise<string | undefined> {
@@ -61,10 +61,57 @@ async function saveFile(cwd: string, name: string, content: string): Promise<str
     const target = join(gitDir, 'whobrokeit', basename(name));
     await mkdir(dirname(target), { recursive: true });
     await writeFile(target, content);
-    const shown = relative(process.cwd(), target);
-    return shown.startsWith('..') ? target : shown.split(sep).join('/');
+    return target;
   } catch {
     return undefined;
+  }
+}
+
+const within = (dir: string, path: string): boolean => {
+  const rel = relative(dir, path);
+  return !rel.startsWith('..') && !isAbsolute(rel);
+};
+
+/** A saved file as you would type it from here: relative while that stays in the repository. */
+async function display(path: string, root: string | undefined): Promise<string> {
+  try {
+    const [here, file] = await Promise.all([realpath(process.cwd()), realpath(path)]);
+    if (within(here, file) || (root !== undefined && within(root, here) && within(root, file))) {
+      return relative(here, file).split(sep).join('/') || path;
+    }
+  } catch {
+    // shown in full
+  }
+  return path;
+}
+
+const quote = (arg: string): string => (/[\s"'$`&|;<>()]/.test(arg) ? `"${arg}"` : arg);
+
+/**
+ * How to apply the fix from here. `git apply` run in a subfolder quietly skips every file outside
+ * it and still says nothing went wrong, so the command runs it at the repository root.
+ */
+async function applyCommand(root: string, patch: string): Promise<string | undefined> {
+  try {
+    const rel = relative(root, await realpath(patch));
+    const file = rel.startsWith('..') || isAbsolute(rel) ? patch : rel.split(sep).join('/');
+    const up = relative(await realpath(process.cwd()), root);
+    if (!up) return `git apply ${quote(file)}`;
+    // `git -C ../..` or `git -C demo` reads better than a full path, which is kept for the rest.
+    const parts = up.split(sep);
+    const short = !isAbsolute(up) && (parts.every((part) => part === '..') || !parts.includes('..'));
+    return `git -C ${quote(short ? parts.join('/') : root)} apply ${quote(file)}`;
+  } catch {
+    return undefined;
+  }
+}
+
+async function writeReport(path: string, markdown: string): Promise<void> {
+  try {
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, markdown);
+  } catch (err) {
+    throw new UserError(`Could not write the report to ${path}: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
@@ -124,9 +171,21 @@ async function main(argv: string[]): Promise<number> {
   let bug = positionals.join(' ').trim() || undefined;
   let withFiles = values.with ?? [];
 
+  // Checked before a demo repo is made, so a typo doesn't leave one behind.
+  if (values.explain && values['no-explain']) throw new UserError('Give either --explain or --no-explain, not both.');
+  let timeoutMs: number | undefined;
+  if (values.timeout !== undefined) {
+    const seconds = Number(values.timeout);
+    if (!Number.isFinite(seconds) || seconds <= 0) throw new UserError('--timeout must be a positive number of seconds.');
+    timeoutMs = seconds * 1000;
+  }
+
   // After `--` everything is the bug description, even a bug called "demo".
   const first = tokens.find((token) => token.kind !== 'option');
   if (first?.kind === 'positional' && first.value === 'demo') {
+    if (!values.ai && !values.explain && (values.agent || values.model)) {
+      throw new UserError('In the demo, --agent and --model need --ai.', 'For example: whobrokeit demo --ai --agent codex');
+    }
     const dir = positionals[1] ? resolve(positionals[1]) : await mkdtemp(join(tmpdir(), 'whobrokeit-demo-'));
     await createDemoRepo(dir);
     process.stderr.write(
@@ -160,13 +219,6 @@ async function main(argv: string[]): Promise<number> {
     return 1;
   }
 
-  let timeoutMs: number | undefined;
-  if (values.timeout !== undefined) {
-    const seconds = Number(values.timeout);
-    if (!Number.isFinite(seconds) || seconds <= 0) throw new UserError('--timeout must be a positive number of seconds.');
-    timeoutMs = seconds * 1000;
-  }
-
   const controller = new AbortController();
   const onSignal = (): void => {
     if (controller.signal.aborted) process.exit(130);
@@ -178,7 +230,6 @@ async function main(argv: string[]): Promise<number> {
   const signals = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const;
   for (const signal of signals) process.on(signal, onSignal);
 
-  if (values.explain && values['no-explain']) throw new UserError('Give either --explain or --no-explain, not both.');
   const wantsExplain = bug ? !values['no-explain'] : Boolean(values.explain);
 
   try {
@@ -207,16 +258,23 @@ async function main(argv: string[]): Promise<number> {
     });
 
     const fix = outcome.kind === 'found' ? outcome.explanation?.fix : undefined;
+    const testFile = outcome.repro ? await saveFile(cwd, outcome.repro.path, outcome.repro.code) : undefined;
+    const fixFile = fix?.verified ? await saveFile(cwd, 'fix.patch', fix.patch) : undefined;
+    const root = await git(['rev-parse', '--show-toplevel'], cwd)
+      .then((top) => realpath(top))
+      .catch(() => undefined);
     const saved: SavedFiles = {
-      test: outcome.repro ? await saveFile(cwd, outcome.repro.path, outcome.repro.code) : undefined,
-      fix: fix?.verified ? await saveFile(cwd, 'fix.patch', fix.patch) : undefined,
+      test: testFile && (await display(testFile, root)),
+      fix: fixFile && (await display(fixFile, root)),
+      apply: fixFile && root && (await applyCommand(root, fixFile)),
     };
-    if (values.report) await writeFile(resolve(values.report), toMarkdown(outcome, test ?? ''));
     if (values.json) {
       process.stdout.write(`${JSON.stringify({ ...outcome, savedTest: saved.test, savedFix: saved.fix }, null, 2)}\n`);
     } else {
       process.stdout.write(renderOutcome(outcome, colorFor(process.stdout), process.stdout.columns || 100, saved));
     }
+    // After the result is out, so a bad --report path never costs the result.
+    if (values.report) await writeReport(resolve(values.report), toMarkdown(outcome, test ?? ''));
     return exitCode(outcome);
   } catch (err) {
     if (controller.signal.aborted) return 130;

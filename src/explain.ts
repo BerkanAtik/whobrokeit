@@ -1,4 +1,4 @@
-import { readFile, writeFile } from 'node:fs/promises';
+import { lstat, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { normalizeReproPath } from './repro.js';
 
@@ -61,12 +61,15 @@ const TEST_PATH = /(^|\/)(tests?|__tests__|specs?)\/|[._-](test|spec)\.[^/]+$|(^
 
 /**
  * Applies the edits to the files in `dir`. Returns the changed paths, or a problem.
- * The fix has to change the code, so test files and the files whobrokeit drops in are off limits.
+ * The fix has to change the code, so test files and the files whobrokeit drops in are off limits,
+ * and so is anything git does not track: an edit in node_modules or build output would make the
+ * test pass without reaching the patch, and would stay in place for the next try.
  */
 export async function applyEdits(
   dir: string,
   edits: Edit[],
   protectedPaths: string[],
+  isTracked: (path: string) => Promise<boolean>,
 ): Promise<{ files: string[] } | { problem: string }> {
   const contents = new Map<string, string>();
 
@@ -78,8 +81,20 @@ export async function applyEdits(
       return { problem: `${path} is a test. The fix must change the code, not the tests.` };
     }
 
-    let content = contents.get(path) ?? (await readFile(join(dir, path), 'utf8').catch(() => null));
-    if (content === null) return { problem: `${path} does not exist. Edits can only change existing files.` };
+    let content = contents.get(path);
+    if (content === undefined) {
+      const file = join(dir, path);
+      const stat = await lstat(file).catch(() => null);
+      // Writing through a link could change a file outside the temporary checkout.
+      if (stat?.isSymbolicLink()) return { problem: `${path} is a symbolic link. Edit the file it points to.` };
+      if (!stat?.isFile()) return { problem: `${path} does not exist. Edits can only change existing files.` };
+      if (!(await isTracked(path))) {
+        return {
+          problem: `${path} is not part of the repository (git does not track it, like node_modules or build output). Change the project's own files.`,
+        };
+      }
+      content = await readFile(file, 'utf8');
+    }
 
     let { find, replace } = edit;
     if (!find) return { problem: `the <find> for ${path} is empty.` };

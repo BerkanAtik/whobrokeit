@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,7 +9,12 @@ import { DEMO_REPRO, DEMO_TEST, createDemoRepo } from '../src/demo.js';
 import { findCulprit } from '../src/engine.js';
 import { runCommand } from '../src/exec.js';
 import { git } from '../src/git.js';
-import { colorFor, excerpt, palette, renderOutcome, timeAgo, toMarkdown } from '../src/report.js';
+import { colorFor, excerpt, formatDuration, palette, renderOutcome, timeAgo, toMarkdown } from '../src/report.js';
+
+const CLI = fileURLToPath(new URL('../src/cli.ts', import.meta.url));
+const cli = (args: string): string => `node --import ${import.meta.resolve('tsx')} "${CLI}" ${args}`;
+/** Fails while flag.txt says "broken". */
+const FLAG_TEST = `node -e "process.exit(require('fs').readFileSync('flag.txt','utf8').startsWith('broken')?1:0)"`;
 
 let repo: string;
 
@@ -66,13 +72,62 @@ test('file names outside ASCII are shown as they are', async () => {
     await commit('fine');
     await commit('broken', 'çay.txt');
     await commit('broken still');
-    const test = `node -e "process.exit(require('fs').readFileSync('flag.txt','utf8').startsWith('broken')?1:0)"`;
-    const outcome = await findCulprit({ cwd: dir, test });
+    const outcome = await findCulprit({ cwd: dir, test: FLAG_TEST });
     assert.equal(outcome.kind, 'found');
     if (outcome.kind !== 'found') return;
     assert.deepEqual(outcome.culprit.files.map((f) => f.path).sort(), ['flag.txt', 'çay.txt']);
   } finally {
     await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('signed commits read right, even with log.showSignature on', async () => {
+  // With that setting, git prints a signature check before the output of `git show --format`.
+  const dir = await mkdtemp(join(tmpdir(), 'whobrokeit-signed-'));
+  try {
+    await git(['init', '-q'], dir);
+    await git(['config', 'log.showSignature', 'true'], dir);
+    for (const flag of ['fine', 'broken', 'broken still']) {
+      await writeFile(join(dir, 'flag.txt'), flag);
+      await git(['add', '-A'], dir);
+      const tree = await git(['write-tree'], dir);
+      const parent = await git(['rev-parse', '-q', '--verify', 'HEAD'], dir).catch(() => '');
+      const who = 'T <t@example.com> 1700000000 +0000';
+      // A signature git can't check is enough to make it print one; no key needed.
+      const object = [
+        `tree ${tree}`,
+        ...(parent ? [`parent ${parent}`] : []),
+        `author ${who}`,
+        `committer ${who}`,
+        'gpgsig -----BEGIN SSH SIGNATURE-----',
+        ' U1NIU0lHAAAAAQ==',
+        ' -----END SSH SIGNATURE-----',
+        '',
+        flag,
+        '',
+      ].join('\n');
+      const file = join(dir, '.git', 'commit.txt');
+      await writeFile(file, object);
+      await git(['update-ref', 'HEAD', await git(['hash-object', '--no-filters', '-t', 'commit', '-w', file], dir)], dir);
+    }
+    const outcome = await findCulprit({ cwd: dir, test: FLAG_TEST });
+    assert.equal(outcome.kind, 'found');
+    if (outcome.kind !== 'found') return;
+    assert.match(outcome.culprit.sha, /^[0-9a-f]{40}$/);
+    assert.equal(outcome.culprit.subject, 'broken');
+    assert.match(outcome.parent.sha, /^[0-9a-f]{40}$/);
+  } finally {
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('an empty repository gets a plain answer', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'whobrokeit-empty-'));
+  try {
+    await git(['init', '-q'], dir);
+    await assert.rejects(findCulprit({ cwd: dir, test: 'exit 1' }), /This repository has no commits yet\./);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });
 
@@ -97,9 +152,17 @@ test('says so when the test already passes', async () => {
   assert.equal(markdown.match(/1 checks?/g)?.length, 1, markdown);
 });
 
-test('says so when nothing in history works', async () => {
-  const outcome = await findCulprit({ cwd: repo, test: 'node -e "process.exit(1)"' });
+test('says so when nothing in history works, and shows what the test printed', async () => {
+  // As with a typo in the command, or a test file that older commits don't have.
+  const command = `node -e "console.log('Cannot find module ./test/new.js'); process.exit(1)"`;
+  const outcome = await findCulprit({ cwd: repo, test: command });
   assert.equal(outcome.kind, 'no-good-commit');
+  if (outcome.kind !== 'no-good-commit') return;
+  assert.match(outcome.output, /Cannot find module/);
+  const text = renderOutcome(outcome, palette(false));
+  assert.match(text, /Test output:\n {2}Cannot find module \.\/test\/new\.js/);
+  assert.match(text, /--with <file> if the test file is newer than the bug/);
+  assert.match(toMarkdown(outcome, command), /## Test output\n\n```text\nCannot find module \.\/test\/new\.js\n```/);
 });
 
 test('says so when the given good commit is broken too', async () => {
@@ -110,6 +173,10 @@ test('says so when the given good commit is broken too', async () => {
   // A test that cannot run there did not fail there.
   const skipped = renderOutcome({ ...outcome, verdict: 'skip', reason: 'test crashed' }, palette(false));
   assert.match(skipped, /The test cannot run at --good [0-9a-f]+ \(test crashed\)\./);
+  // With no culprit, the agent's test is still worth a look.
+  const repro = { path: 'r.mjs', command: 'node r.mjs', code: 'a\nb\n', agent: 'Fake Agent', attempts: 1 };
+  const shown = renderOutcome({ ...outcome, repro }, palette(false), 100, { test: '.git/whobrokeit/r.mjs' });
+  assert.match(shown, /The test Fake Agent wrote \(2 lines\): \.git\/whobrokeit\/r\.mjs/);
 });
 
 test('a --good or --bad that starts with a dash is never given to git', async () => {
@@ -119,10 +186,22 @@ test('a --good or --bad that starts with a dash is never given to git', async ()
 test('a bug called "demo" after -- is described, not the demo command', async () => {
   const outside = await mkdtemp(join(tmpdir(), 'whobrokeit-nogit-'));
   try {
-    const cli = fileURLToPath(new URL('../src/cli.ts', import.meta.url));
-    const run = await runCommand(`node --import ${import.meta.resolve('tsx')} "${cli}" --agent "node -e 0" -- demo`, outside, 60_000);
+    const run = await runCommand(cli('--agent "node -e 0" -- demo'), outside, 60_000);
     assert.equal(run.code, 1);
     assert.match(run.output, /not inside a git repository/);
+  } finally {
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+test('demo --agent without --ai says what is missing, and makes no repo', async () => {
+  const outside = await mkdtemp(join(tmpdir(), 'whobrokeit-nodemo-'));
+  try {
+    const target = join(outside, 'demo');
+    const run = await runCommand(cli(`demo "${target}" --agent codex`), outside, 60_000);
+    assert.equal(run.code, 1);
+    assert.match(run.output, /In the demo, --agent and --model need --ai\./);
+    assert.equal(existsSync(target), false);
   } finally {
     await rm(outside, { recursive: true, force: true });
   }
@@ -140,6 +219,13 @@ test('excerpt jumps to the error message', () => {
 
 test('excerpt falls back to the first failure line', () => {
   assert.equal(excerpt('ok 1 - a\nnot ok 2 - b\n# pass 1\n')[0], 'not ok 2 - b');
+});
+
+test('durations never read "1m 60s"', () => {
+  assert.equal(formatDuration(1500), '1.5s');
+  assert.equal(formatDuration(59_960), '1m 0s');
+  assert.equal(formatDuration(61_000), '1m 1s');
+  assert.equal(formatDuration(119_500), '2m 0s');
 });
 
 test('timeAgo reads naturally', () => {

@@ -118,8 +118,14 @@ export class Sandbox {
     try {
       for (const overlay of this.overlays) {
         const target = join(this.dir, overlay.path);
-        await mkdir(dirname(target), { recursive: true });
-        await writeFile(target, overlay.content);
+        try {
+          await mkdir(dirname(target), { recursive: true });
+          await writeFile(target, overlay.content);
+        } catch (err) {
+          // Say, a folder on its path is a file at this commit.
+          const code = (err as NodeJS.ErrnoException).code ?? String(err);
+          return { verdict: 'skip', reason: `cannot write ${overlay.path} at this commit (${code})` };
+        }
       }
 
       const setup = await this.pendingSetup();
@@ -159,7 +165,9 @@ export class Sandbox {
 
     const auto = await this.detectJsInstall();
     if (!auto) return null;
-    if (auto.key === this.installedKey && existsSync(join(this.dir, 'node_modules'))) return null;
+    // Yarn's Plug'n'Play leaves .pnp.cjs instead of node_modules.
+    const installed = existsSync(join(this.dir, 'node_modules')) || existsSync(join(this.dir, '.pnp.cjs'));
+    if (auto.key === this.installedKey && installed) return null;
     return auto;
   }
 
@@ -192,14 +200,16 @@ export class Sandbox {
     return { command: NPM_INSTALL, key: `${NPM_INSTALL}:${hash(JSON.stringify(deps))}` };
   }
 
-  private async isTracked(file: string): Promise<boolean> {
+  /** Whether git tracks this file, unlike installed or built ones. */
+  async isTracked(file: string): Promise<boolean> {
     return (await gitRaw(['ls-files', '--error-unmatch', '--', file], this.dir)).code === 0;
   }
 
   private async hasTool(tool: string): Promise<boolean> {
     let found = this.tools.get(tool);
     if (found === undefined) {
-      found = (await runCommand(`${tool} --version`, this.dir, 30_000)).code === 0;
+      // Untrusted: the repo can point yarn at its own copy (yarnPath), so this runs the repo's code.
+      found = (await runCommand(`${tool} --version`, this.dir, 30_000, { untrusted: true })).code === 0;
       this.tools.set(tool, found);
     }
     return found;

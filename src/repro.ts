@@ -40,8 +40,8 @@ export function classifyRepro(run: RunResult): { verdict: Verdict; reason?: stri
 }
 
 /** Why a verification run at the bad commit did not count as reproducing the bug. */
-export function explainMiss(run: RunResult | undefined, timeoutMs: number): string {
-  if (!run) return 'it could not be run.';
+export function explainMiss(run: RunResult | undefined, timeoutMs: number, reason?: string): string {
+  if (!run) return `it could not be run${reason ? `: ${reason}` : ''}.`;
   if (run.timedOut) return `it did not finish within ${Math.round(timeoutMs / 1000)} seconds.`;
   if (run.code === 0) {
     return 'it exited 0, which means "the behavior is correct". It does not catch the bug: it checks the wrong thing, or a different scenario than the report.';
@@ -127,7 +127,7 @@ It will run unchanged on many older commits, so it must follow this contract exa
 - If the bug shows up as an exception or a crash, catch it around the one call that triggers it and report it as the bug, but only when it is the error from the report: check its message or type, and rethrow anything else. Never put imports or setup inside that try, because on an older commit they can fail for unrelated reasons.
 - Any other failure, like a crash in the script itself, counts as "can't tell" rather than as the bug.
 
-Keep it short (usually under 40 lines) and deterministic: no network, no sleeping, no dependence on today's date or on random values, done in a few seconds. Use only the language runtime, the project's own code and the dependencies it already has (they are installed before the script runs). Load the code under test through stable entry points so the script still works on older commits. Prefer a plain script over a test framework. Write comments and messages in the language the bug report is written in (an English report gets English messages), whatever language you usually reply in. In Node.js, set process.exitCode instead of calling process.exit(), so the output is not cut off.
+Keep it short (usually under 40 lines) and deterministic: no network, no sleeping, no dependence on today's date or on random values, done in a few seconds. Use only the language runtime, the project's own code and the dependencies it already has (they are installed before the script runs). Load the code under test through stable entry points so the script still works on older commits. If that code only runs after a build step (TypeScript compiled to dist/, a bundle), start the command with the build, for example \`npm run build && node whobrokeit-repro.mjs\`: nothing is rebuilt between commits, so older commits would otherwise run newer build output. Prefer a plain script over a test framework. Write comments and messages in the language the bug report is written in (an English report gets English messages), whatever language you usually reply in. In Node.js, set process.exitCode instead of calling process.exit(), so the output is not cut off.
 
 Put the script in a new file, never an existing one, at the repository root unless the language needs it somewhere else. The command runs from the repository root and must run only this script, not the whole test suite.
 

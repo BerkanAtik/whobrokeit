@@ -1,5 +1,6 @@
+import { existsSync } from 'node:fs';
 import { readFile, realpath } from 'node:fs/promises';
-import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { Agent } from './agent.js';
 import { UserError } from './errors.js';
 import { applyEdits, buildExplainPrompt, parseExplanation, type FixAttempt } from './explain.js';
@@ -154,6 +155,8 @@ export type Outcome =
       shallow: boolean;
       /** Some older commits could not run the test at all. */
       untestable: boolean;
+      /** What the test printed at the oldest commit. */
+      output: string;
     } & Stats)
   /** The test fails at the given --good commit (`bad`), or cannot run there (`skip`). */
   | ({ kind: 'good-fails'; good: CommitRef; verdict: 'bad' | 'skip'; reason?: string; output: string } & Stats)
@@ -175,6 +178,8 @@ const AGENT_TIMEOUT_MS = 15 * 60 * 1000;
 // Git 2.4x+ quotes the term ("the first 'bad' commit"); older versions don't.
 const FIRST_BAD = /^([0-9a-f]{40,64}) is the first '?bad'? commit/m;
 const ONLY_SKIPPED = /only '?skip'?ped commits left to test/;
+/** With log.showSignature set, `git show` prints a signature check before the format. */
+const NO_SIGNATURE = '--no-show-signature';
 
 export async function findCulprit(opts: EngineOptions): Promise<Outcome> {
   if (Boolean(opts.test) === Boolean(opts.describe)) throw new Error('findCulprit needs exactly one of test or describe.');
@@ -183,7 +188,7 @@ export async function findCulprit(opts: EngineOptions): Promise<Outcome> {
 
   const repoRoot = await resolveRepoRoot(opts.cwd);
   const badInput = opts.bad ?? 'HEAD';
-  const badSha = await resolveCommit(repoRoot, badInput, '--bad');
+  const badSha = await resolveCommit(repoRoot, badInput, '--bad', opts.bad ? undefined : 'This repository has no commits yet.');
   const givenGood = opts.good ? await resolveCommit(repoRoot, opts.good, '--good') : undefined;
   if (givenGood) {
     const ancestor = await gitRaw(['merge-base', '--is-ancestor', givenGood, badSha], repoRoot);
@@ -197,7 +202,8 @@ export async function findCulprit(opts: EngineOptions): Promise<Outcome> {
   const ref = async (sha: string): Promise<CommitRef> => {
     let known = refs.get(sha);
     if (!known) {
-      const [full, short, subject] = (await git(['show', '-s', '--format=%H%x1f%h%x1f%s', sha], repoRoot)).split('\x1f');
+      const shown = await git(['show', '-s', NO_SIGNATURE, '--format=%H%x1f%h%x1f%s', sha], repoRoot);
+      const [full, short, subject] = shown.split('\x1f');
       known = { sha: full, short, subject };
       refs.set(sha, known);
     }
@@ -215,6 +221,8 @@ export async function findCulprit(opts: EngineOptions): Promise<Outcome> {
   let test = opts.test ?? '';
   let classify: Classifier | undefined;
   let repro: ReproInfo | undefined;
+  /** What the test printed where the bug is. */
+  let badOutput = '';
   let checks = 0;
   const stats = (): Stats => ({ checks, durationMs: Date.now() - started, ...(repro && { repro }) });
 
@@ -272,8 +280,12 @@ export async function findCulprit(opts: EngineOptions): Promise<Outcome> {
         continue;
       }
       const candidate: Repro = { ...reply.repro, path: normalized.path };
-      const exists = await gitRaw(['cat-file', '-e', `${badSha}:${candidate.path}`], repoRoot);
-      if (exists.code === 0 || overlays.some((o) => o.path === candidate.path)) {
+      const exists =
+        (await gitRaw(['cat-file', '-e', `${badSha}:${candidate.path}`], repoRoot)).code === 0 ||
+        // On disk too: an installed file (node_modules), or the same name in other case on Windows and macOS.
+        existsSync(join(sandbox.dir, candidate.path)) ||
+        overlays.some((o) => o.path === candidate.path);
+      if (exists) {
         miss(n, `${candidate.path} already exists. Write a new file and never replace existing ones.`, candidate);
         continue;
       }
@@ -285,12 +297,17 @@ export async function findCulprit(opts: EngineOptions): Promise<Outcome> {
       const evaluation = await check('write-test', badSha, `attempt ${n}`, false);
       if (evaluation.verdict === 'bad') {
         repro = { ...candidate, agent, attempts: n };
+        badOutput = evaluation.run?.output ?? '';
         return undefined;
       }
       if (evaluation.reason?.includes('dependencies')) {
         return { kind: 'cannot-test', bad, output: evaluation.run?.output ?? '', reason: evaluation.reason, ...stats() };
       }
-      attempts.push({ repro: candidate, problem: explainMiss(evaluation.run, timeoutMs), output: evaluation.run?.output });
+      attempts.push({
+        repro: candidate,
+        problem: explainMiss(evaluation.run, timeoutMs, evaluation.reason),
+        output: evaluation.run?.output,
+      });
     }
 
     const reason = `None of the ${max} attempts produced a test that fails at ${bad.short}.`;
@@ -311,12 +328,12 @@ export async function findCulprit(opts: EngineOptions): Promise<Outcome> {
     let note: string | undefined;
     emit({ type: 'phase', phase: 'explain', agent });
 
-    const diff = await git(['diff', '--no-color', '--no-ext-diff', parentSha, culprit.sha], repoRoot);
-    const behind = Number(await git(['rev-list', '--count', `${culprit.sha}..${badSha}`], repoRoot));
-    // Fixes must leave the test itself and every file whobrokeit drops in alone.
-    const protectedPaths = sandbox.overlays.map((o) => o.path);
-
     try {
+      const diff = await git(['diff', '--no-color', '--no-ext-diff', parentSha, culprit.sha], repoRoot);
+      const behind = Number(await git(['rev-list', '--count', `${culprit.sha}..${badSha}`], repoRoot));
+      // Fixes must leave the test itself and every file whobrokeit drops in alone.
+      const protectedPaths = sandbox.overlays.map((o) => o.path);
+
       for (let n = 1; n <= max; n++) {
         opts.signal?.throwIfAborted();
         emit({ type: 'agent', attempt: n, of: max });
@@ -349,16 +366,25 @@ export async function findCulprit(opts: EngineOptions): Promise<Outcome> {
           continue;
         }
 
-        const applied = await applyEdits(sandbox.dir, reply.edits, protectedPaths);
-        if ('problem' in applied) {
+        const unusable = async (problem: string): Promise<void> => {
           await sandbox.clean();
-          emit({ type: 'rejected', attempt: n, problem: applied.problem });
-          note = `${agent}'s fix could not be applied: ${applied.problem}`;
-          attempts.push({ edits: reply.edits, problem: `whobrokeit could not apply it: ${applied.problem}` });
+          emit({ type: 'rejected', attempt: n, problem });
+          note = `${agent}'s fix could not be applied: ${problem}`;
+          attempts.push({ edits: reply.edits, problem: `whobrokeit could not apply it: ${problem}` });
+        };
+        const applied = await applyEdits(sandbox.dir, reply.edits, protectedPaths, (path) => sandbox.isTracked(path));
+        if ('problem' in applied) {
+          await unusable(applied.problem);
+          continue;
+        }
+        // Prefixes spelled out: with diff.noprefix set, `git apply` could not use the patch.
+        const changes = await git(['diff', '--no-color', '--no-ext-diff', '--src-prefix=a/', '--dst-prefix=b/'], sandbox.dir);
+        if (!changes) {
+          await unusable('the edits changed nothing.');
           continue;
         }
 
-        const patch = `${await git(['diff', '--no-color', '--no-ext-diff'], sandbox.dir)}\n`;
+        const patch = `${changes}\n`;
         emit({ type: 'fix', attempt: n, files: applied.files });
         const evaluation = await check('explain', badSha, 'with fix', false);
         if (evaluation.verdict === 'good') {
@@ -372,8 +398,10 @@ export async function findCulprit(opts: EngineOptions): Promise<Outcome> {
         attempts.push({ edits: reply.edits, problem, output: evaluation.run?.output });
       }
     } catch (err) {
-      if (opts.signal?.aborted || !(err instanceof UserError)) throw err;
-      return { agent, why, note: err.message };
+      // The culprit is proven by now: whatever goes wrong here costs only the explanation.
+      if (opts.signal?.aborted) throw err;
+      const message = err instanceof Error ? err.message : String(err);
+      return { agent, why, note: err instanceof UserError ? message : `Explaining it failed: ${message}` };
     }
     return { agent, why, note };
   };
@@ -387,6 +415,7 @@ export async function findCulprit(opts: EngineOptions): Promise<Outcome> {
       // 1. The test must fail where the user says the bug is.
       emit({ type: 'phase', phase: 'reproduce' });
       const atBad = await check('reproduce', badSha, badInput, false);
+      badOutput = atBad.run?.output ?? '';
       if (atBad.verdict === 'good') {
         return { kind: 'not-reproduced', bad, output: atBad.run?.output ?? '', ...stats() };
       }
@@ -421,14 +450,19 @@ export async function findCulprit(opts: EngineOptions): Promise<Outcome> {
       good = givenGood;
     } else {
       const root = (await git(['rev-list', '--first-parent', '--max-parents=0', badSha], repoRoot)).split('\n')[0];
-      if (root === badSha) return { kind: 'no-good-commit', bad, oldest: bad, shallow, untestable: false, ...stats() };
+      if (root === badSha) {
+        return { kind: 'no-good-commit', bad, oldest: bad, shallow, untestable: false, output: badOutput, ...stats() };
+      }
       const rootDistance = Number(await git(['rev-list', '--count', '--first-parent', `${root}..${badSha}`], repoRoot));
 
       let untestable = false;
+      // Shown if nothing works: a typo in the command, or a test file older commits don't have.
+      let rootOutput = '';
       /** Tests the commit `distance` first-parent steps behind bad. */
       const probe = async (distance: number): Promise<{ verdict: Verdict; sha: string }> => {
         const sha = distance >= rootDistance ? root : await git(['rev-parse', `${badSha}~${distance}`], repoRoot);
-        const { verdict } = await check('find-good', sha, `${badInput}~${Math.min(distance, rootDistance)}`);
+        const { verdict, run } = await check('find-good', sha, `${badInput}~${Math.min(distance, rootDistance)}`);
+        if (sha === root) rootOutput = run?.output ?? '';
         if (verdict === 'bad') lastBad = sha;
         if (verdict === 'skip') untestable = true;
         return { verdict, sha };
@@ -459,7 +493,7 @@ export async function findCulprit(opts: EngineOptions): Promise<Outcome> {
           }
         }
         if (n >= rootDistance) {
-          return { kind: 'no-good-commit', bad, oldest: await ref(root), shallow, untestable, ...stats() };
+          return { kind: 'no-good-commit', bad, oldest: await ref(root), shallow, untestable, output: rootOutput, ...stats() };
         }
       }
     }
@@ -535,12 +569,13 @@ async function resolveRepoRoot(cwd: string): Promise<string> {
   return result.stdout.trim();
 }
 
-async function resolveCommit(repoRoot: string, input: string, flag: string): Promise<string> {
+/** `missing` replaces the message when the user did not give this ref. */
+async function resolveCommit(repoRoot: string, input: string, flag: string, missing?: string): Promise<string> {
   // No ref starts with a dash; git would read one as an option.
   const result = input.startsWith('-')
     ? undefined
     : await gitRaw(['rev-parse', '--verify', '--quiet', `${input}^{commit}`], repoRoot);
-  if (result?.code !== 0) throw new UserError(`${flag} ${input} is not a commit in this repository.`);
+  if (result?.code !== 0) throw new UserError(missing ?? `${flag} ${input} is not a commit in this repository.`);
   return result.stdout.trim();
 }
 
@@ -565,7 +600,7 @@ async function readOverlays(cwd: string, repoRoot: string, files: string[]): Pro
 
 async function commitInfo(repoRoot: string, sha: string, parent: string): Promise<CommitInfo> {
   const [full, short, subject, author, email, date] = (
-    await git(['show', '-s', '--format=%H%x1f%h%x1f%s%x1f%an%x1f%ae%x1f%aI', sha], repoRoot)
+    await git(['show', '-s', NO_SIGNATURE, '--format=%H%x1f%h%x1f%s%x1f%an%x1f%ae%x1f%aI', sha], repoRoot)
   ).split('\x1f');
   // By default git prints a non-ASCII file name as octal escapes inside quotes.
   const numstat = await git(['-c', 'core.quotePath=false', 'diff', '--numstat', parent, sha], repoRoot);

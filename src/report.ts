@@ -38,8 +38,11 @@ const truncate = (s: string, n: number): string => (s.length <= n ? s : `${s.sli
 
 export function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${Math.floor(ms / 60_000)}m ${Math.round((ms % 60_000) / 1000)}s`;
+  // 59.96s would round to "60.0s".
+  if (ms < 59_950) return `${(ms / 1000).toFixed(1)}s`;
+  // Rounded once, so it can't read "1m 60s".
+  const seconds = Math.round(ms / 1000);
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
 
 export function timeAgo(iso: string, now = Date.now()): string {
@@ -168,6 +171,8 @@ export function liveReporter(
 export interface SavedFiles {
   test?: string;
   fix?: string;
+  /** A command that applies the fix from where whobrokeit was started. */
+  apply?: string;
 }
 
 /** The final result, for humans. */
@@ -180,8 +185,11 @@ export function renderOutcome(outcome: Outcome, c: Palette, columns = 100, saved
   const { headline, detail, commits = [], output } = notice(outcome);
   const lines = [...detail, ...commits.map((x) => `  ${c.yellow(x.short)}  ${x.subject}`)];
   const shown = excerpt(output);
-  const tail = shown.length > 0 ? `\n${c.dim('Test output:')}\n${shown.map((l) => c.dim(`  ${l}`)).join('\n')}\n` : '';
-  return `\n${c.yellow(headline)}\n${lines.join('\n')}\n${tail}\n${footer}\n`;
+  const tail =
+    shown.length > 0 ? `\n${c.dim('Test output:')}\n${shown.map((l) => c.dim(`  ${truncate(l, max - 2)}`)).join('\n')}\n` : '';
+  // The agent's test is worth a look when no culprit came of it.
+  const repro = outcome.repro ? `\n${reproLine(outcome.repro, c, saved.test)}` : '';
+  return `\n${c.yellow(headline)}\n${lines.join('\n')}\n${tail}${repro}\n${footer}\n`;
 }
 
 interface Notice {
@@ -215,9 +223,12 @@ function notice(outcome: Exclude<Outcome, { kind: 'found' }>): Notice {
             ? 'This is a shallow clone. Run `git fetch --unshallow` and try again.'
             : outcome.untestable
               ? 'It fails wherever it can run, and older commits cannot run it at all. If you know a commit where it worked, try --good <commit>.'
-              : 'Either the bug was always there, or the test cannot run on old code (it may use something that did not exist yet). Try --good <commit>.',
+              : `Either the bug was always there, or the test cannot run on old code (it may use something that did not exist yet). Try --good <commit>${
+                  // An agent's test is copied into every commit already; a committed one is not.
+                  outcome.repro ? '' : ', and --with <file> if the test file is newer than the bug'
+                }.`,
         ],
-        output: '',
+        output: outcome.output,
       };
     case 'good-fails':
       return outcome.verdict === 'skip'
@@ -299,14 +310,14 @@ function renderFound(
       ? `\n${c.dim(`Test output at ${culprit.short}:`)}\n${output.map((l) => c.dim(`  ${truncate(l, max - 2)}`)).join('\n')}\n`
       : '';
 
-  const explained = outcome.explanation ? explanationLines(outcome.explanation, outcome.bad.short, c, max, saved.fix) : '';
+  const explained = outcome.explanation ? explanationLines(outcome.explanation, outcome.bad.short, c, max, saved.apply) : '';
   const repro = outcome.repro ? reproLine(outcome.repro, c, saved.test) : '';
   return `\n${box}\n${tail}${explained}\n${repro}${c.dim('See the change:')} git show ${culprit.short}\n`;
 }
 
 const MAX_PATCH_LINES = 24;
 
-function explanationLines(explanation: Explanation, badShort: string, c: Palette, max: number, savedFix?: string): string {
+function explanationLines(explanation: Explanation, badShort: string, c: Palette, max: number, apply?: string): string {
   const out: string[] = [];
   if (explanation.why) {
     out.push('', `${c.bold('Why it broke')}  ${c.dim(`(${explanation.agent})`)}`);
@@ -320,7 +331,7 @@ function explanationLines(explanation: Explanation, badShort: string, c: Palette
     const lines = patchLines(fix.patch, c, max - 2);
     out.push(...lines.slice(0, MAX_PATCH_LINES).map((line) => `  ${line}`));
     if (lines.length > MAX_PATCH_LINES) out.push(c.dim(`  … ${lines.length - MAX_PATCH_LINES} more lines`));
-    if (savedFix) out.push('', `${c.dim('Apply it:')} git apply ${savedFix}`);
+    if (apply) out.push('', `${c.dim('Apply it:')} ${apply}`);
   } else if (explanation.note) {
     out.push('', c.yellow(`No verified fix. ${explanation.note}`));
   }
@@ -358,7 +369,9 @@ function wrap(text: string, max: number): string[] {
 
 function reproLine(repro: ReproInfo, c: Palette, savedTest?: string): string {
   const lines = repro.code.replace(/\r/g, '').trimEnd().split('\n').length;
-  return `${c.dim(`The test ${repro.agent} wrote (${lines} lines):`)} ${savedTest ?? repro.path}\n`;
+  const where = `${c.dim(`The test ${repro.agent} wrote (${lines} lines):`)} ${savedTest ?? repro.path}\n`;
+  // Where it is saved, the imports it makes can't find the code.
+  return savedTest ? `${where}${c.dim(`It runs from the repository root as ${repro.path}: ${repro.command}`)}\n` : where;
 }
 
 function fileLines(commit: CommitInfo, c: Palette, inner: number): string[] {
@@ -393,16 +406,24 @@ export function excerpt(output: string, max = 8): string[] {
 }
 
 const MAX_REPORT_FILES = 20;
+/** A minified bundle in a stack trace can put more on one line than a whole issue comment may hold. */
+const MAX_REPORT_LINE = 400;
 
 /** A Markdown report, for issues and PRs. */
 export function toMarkdown(outcome: Outcome, testCommand: string): string {
   const command = outcome.repro?.command ?? testCommand;
-  const meta = `_Test: \`${command}\` · ${outcome.checks} checks · ${formatDuration(outcome.durationMs)}_`;
+  // No test to name when the agent never wrote one that held.
+  const facts = [
+    ...(command ? [`Test: ${code(command)}`] : []),
+    `${outcome.checks} check${outcome.checks === 1 ? '' : 's'}`,
+    formatDuration(outcome.durationMs),
+  ];
+  const meta = `_${facts.join(' · ')}_`;
   const reproSection = outcome.repro
     ? [
         `## The test ${outcome.repro.agent} wrote`,
         '',
-        `\`${outcome.repro.path}\`, run with \`${outcome.repro.command}\`.${outcome.kind === 'found' ? ' It fails at the culprit and passes at its parent.' : ''}`,
+        `${code(outcome.repro.path)}, run with ${code(outcome.repro.command)}.${outcome.kind === 'found' ? ' It fails at the culprit and passes at its parent.' : ''}`,
         '',
         `${fence(outcome.repro.code)}${fenceLanguage(outcome.repro.path)}`,
         outcome.repro.code.trimEnd(),
@@ -412,14 +433,14 @@ export function toMarkdown(outcome: Outcome, testCommand: string): string {
     : '';
   if (outcome.kind !== 'found') {
     const { headline, detail, commits = [], output } = notice(outcome);
-    const shown = excerpt(output, 30).join('\n');
+    const shown = reportExcerpt(output);
     return [
       '# whobrokeit report',
       '',
-      `**${headline}**`,
+      `**${noMentions(headline)}**`,
       '',
-      ...detail.flatMap((line) => [line, '']),
-      ...(commits.length > 0 ? [...commits.map((x) => `- \`${x.short}\` ${x.subject}`), ''] : []),
+      ...detail.flatMap((line) => [noMentions(line), '']),
+      ...(commits.length > 0 ? [...commits.map((x) => `- \`${x.short}\` ${noMentions(x.subject)}`), ''] : []),
       ...(shown ? ['## Test output', '', `${fence(shown)}text`, shown, fence(shown), ''] : []),
       ...(reproSection ? [reproSection] : []),
       meta,
@@ -431,12 +452,14 @@ export function toMarkdown(outcome: Outcome, testCommand: string): string {
   const mark = (v: Verdict): string => (v === 'good' ? '✓ works' : v === 'bad' ? '✗ broken' : '↷ skipped');
   const files = culprit.files
     .slice(0, MAX_REPORT_FILES)
-    .map((f) => `- \`${f.path}\` ${f.added === null ? '(binary)' : `+${f.added} −${f.removed}`}`);
+    .map((f) => `- ${code(f.path)} ${f.added === null ? '(binary)' : `+${f.added} −${f.removed}`}`);
   if (culprit.files.length > MAX_REPORT_FILES) files.push(`- _and ${culprit.files.length - MAX_REPORT_FILES} more files_`);
-  const output = excerpt(outcome.failureOutput, 30).join('\n');
+  const output = reportExcerpt(outcome.failureOutput);
   const explanation = outcome.explanation;
   const explainSection: string[] = [];
-  if (explanation?.why) explainSection.push('## Why it broke', '', explanation.why, '', `_Explained by ${explanation.agent}._`, '');
+  if (explanation?.why) {
+    explainSection.push('## Why it broke', '', noMentions(explanation.why), '', `_Explained by ${explanation.agent}._`, '');
+  }
   if (explanation?.fix?.verified) {
     explainSection.push(
       '## Suggested fix',
@@ -449,13 +472,13 @@ export function toMarkdown(outcome: Outcome, testCommand: string): string {
       '',
     );
   } else if (explanation?.note) {
-    explainSection.push(`> No verified fix. ${explanation.note}`, '');
+    explainSection.push(`> No verified fix. ${noMentions(explanation.note)}`, '');
   }
 
   return [
     '# whobrokeit report',
     '',
-    `**Introduced by** \`${culprit.short}\` ${culprit.subject}`,
+    `**Introduced by** \`${culprit.short}\` ${noMentions(culprit.subject)}`,
     `**Author** ${culprit.author}, ${culprit.date.slice(0, 10)} (${timeAgo(culprit.date)})`,
     '',
     // Right under the commit they belong to: further down they read as the size of the fix.
@@ -481,6 +504,34 @@ export function toMarkdown(outcome: Outcome, testCommand: string): string {
     meta,
     '',
   ].join('\n');
+}
+
+/** The interesting part of a test log for a report, with no line long enough to swamp it. */
+function reportExcerpt(output: string): string {
+  return excerpt(output, 30)
+    .map((line) => (line.length > MAX_REPORT_LINE ? `${line.slice(0, MAX_REPORT_LINE)}…` : line))
+    .join('\n');
+}
+
+const ZERO_WIDTH_SPACE = String.fromCharCode(0x200b);
+
+/**
+ * The Action posts the report on GitHub, where "@name" notifies that person. Agent-written text
+ * and commit subjects can hold one (a scoped package like @scope/name, say), so the @ gets a
+ * zero-width space after it. Code spans stay as they are.
+ */
+function noMentions(text: string): string {
+  return text.replace(/(`+)[\s\S]*?\1|\B@(?=[A-Za-z0-9])/g, (match) =>
+    match.startsWith('`') ? match : `@${ZERO_WIDTH_SPACE}`,
+  );
+}
+
+/** Inline code that holds up when the content has backticks of its own. */
+function code(text: string): string {
+  const longest = Math.max(0, ...[...text.matchAll(/`+/g)].map((m) => m[0].length));
+  const ticks = '`'.repeat(longest + 1);
+  const pad = text.startsWith('`') || text.endsWith('`') ? ' ' : '';
+  return `${ticks}${pad}${text}${pad}${ticks}`;
 }
 
 /** A code fence longer than any run of backticks in the content. */
