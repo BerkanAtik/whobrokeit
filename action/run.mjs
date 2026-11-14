@@ -112,8 +112,11 @@ async function main() {
   // the tests it runs, and the GitHub token never leaves this script.
   const env = { ...process.env, FORCE_COLOR: '1' };
   for (const name of Object.keys(env)) if (name.startsWith('WBI_')) delete env[name];
-  if (setting('ANTHROPIC_API_KEY')) env.ANTHROPIC_API_KEY = setting('ANTHROPIC_API_KEY');
-  if (setting('CLAUDE_CODE_OAUTH_TOKEN')) env.CLAUDE_CODE_OAUTH_TOKEN = setting('CLAUDE_CODE_OAUTH_TOKEN');
+  // A token copied from a terminal often picks up a line break in the middle; keys have no spaces.
+  for (const name of ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN']) {
+    const value = setting(name).replace(/\s+/g, '');
+    if (value) env[name] = value;
+  }
 
   if (shouldComment) {
     await github('POST', `${issuePath}/reactions`, { content: 'eyes' }).catch(() => {});
