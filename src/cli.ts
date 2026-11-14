@@ -230,7 +230,8 @@ main(process.argv.slice(2)).then(
     if (err instanceof UserError) {
       process.stderr.write(`${c.red('error:')} ${err.message}\n${err.hint ? `${c.dim(err.hint)}\n` : ''}`);
     } else if (err instanceof Error && 'code' in err && String(err.code).startsWith('ERR_PARSE_ARGS')) {
-      process.stderr.write(`${c.red('error:')} ${err.message}\n${c.dim('Run whobrokeit --help for usage.')}\n`);
+      const hint = 'Run whobrokeit --help for usage. If the bug description starts with a dash, put -- before it.';
+      process.stderr.write(`${c.red('error:')} ${err.message}\n${c.dim(hint)}\n`);
     } else {
       process.stderr.write(`${c.red('Unexpected error:')} ${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`);
     }

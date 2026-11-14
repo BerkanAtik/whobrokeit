@@ -476,7 +476,7 @@ export async function findCulprit(opts: EngineOptions): Promise<Outcome> {
         break;
       }
       if (ONLY_SKIPPED.test(text)) {
-        const shas = [...text.matchAll(/^([0-9a-f]{40})$/gm)].map((m) => m[1]);
+        const shas = [...text.matchAll(/^([0-9a-f]{40,64})$/gm)].map((m) => m[1]);
         await gitRaw(['bisect', 'reset'], sandbox.dir);
         return { kind: 'ambiguous', candidates: await Promise.all(shas.map(ref)), ...stats() };
       }

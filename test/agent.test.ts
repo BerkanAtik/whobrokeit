@@ -9,7 +9,8 @@ import { UserError, findCulprit, type EngineEvent } from '../src/engine.js';
 import type { RunResult } from '../src/exec.js';
 import { parseExplanation } from '../src/explain.js';
 import { git } from '../src/git.js';
-import { buildPrompt, classifyRepro, parseReply } from '../src/repro.js';
+import { toMarkdown } from '../src/report.js';
+import { buildPrompt, classifyRepro, normalizeReproPath, parseReply } from '../src/repro.js';
 
 const BUG_SUBJECT = 'refactor: simplify subtotal with reduce';
 
@@ -270,3 +271,19 @@ test('buildPrompt includes what happened on earlier attempts', () => {
   assert.match(prompt, /ReferenceError: x/);
   assert.match(prompt, /attempt 2 of 3/);
 });
+
+test('the agent may not write into .git, in any spelling', () => {
+  for (const path of ['.git/hooks/pre-commit', '.GIT/config', './.Git/x', '../outside.js', '/etc/passwd', 'C:\\x.js']) {
+    assert.ok('problem' in normalizeReproPath(path), path);
+  }
+  assert.deepEqual(normalizeReproPath('./test\\repro.mjs'), { path: 'test/repro.mjs' });
+});
+
+test('test output with a code fence of its own cannot break the report', async () => {
+  const outcome = await findCulprit({ cwd: repo, test: DEMO_TEST, withFiles: [DEMO_REPRO], good: 'HEAD~20' });
+  assert.equal(outcome.kind, 'found');
+  if (outcome.kind !== 'found') return;
+  const markdown = toMarkdown({ ...outcome, failureOutput: 'WHOBROKEIT_BUG: got\n```\n# not a heading\n' }, DEMO_TEST);
+  assert.ok(markdown.includes('\n````text\nWHOBROKEIT_BUG: got\n```\n# not a heading\n````\n'), markdown);
+});
+

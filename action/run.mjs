@@ -95,18 +95,21 @@ async function main() {
   }
 
   const report = join(process.env.RUNNER_TEMP ?? '.', 'whobrokeit-report.md');
-  const args = test ? ['--test', test] : [bug];
+  // Values go in as `--name=value`, and the bug after `--`: issue text is written by strangers,
+  // and a title like "--test=<command>" must stay a description, never become an option.
+  const args = test ? [`--test=${test}`] : [];
   const explain = setting('EXPLAIN');
   if (test && explain === 'true') args.push('--explain');
   if (!test && explain === 'false') args.push('--no-explain');
-  if (setting('AGENT') && (!test || explain === 'true')) args.push('--agent', setting('AGENT'));
-  if (setting('MODEL')) args.push('--model', setting('MODEL'));
-  if (setting('GOOD')) args.push('--good', setting('GOOD'));
-  if (setting('BAD')) args.push('--bad', setting('BAD'));
+  if (setting('AGENT') && (!test || explain === 'true')) args.push(`--agent=${setting('AGENT')}`);
+  if (setting('MODEL')) args.push(`--model=${setting('MODEL')}`);
+  if (setting('GOOD')) args.push(`--good=${setting('GOOD')}`);
+  if (setting('BAD')) args.push(`--bad=${setting('BAD')}`);
   if (setting('SETUP') === 'none') args.push('--no-setup');
-  else if (setting('SETUP')) args.push('--setup', setting('SETUP'));
-  if (setting('TIMEOUT')) args.push('--timeout', setting('TIMEOUT'));
-  args.push('--report', report);
+  else if (setting('SETUP')) args.push(`--setup=${setting('SETUP')}`);
+  if (setting('TIMEOUT')) args.push(`--timeout=${setting('TIMEOUT')}`);
+  args.push(`--report=${report}`);
+  if (!test) args.push('--', bug);
 
   // Only the agent gets credentials, under the names it expects. whobrokeit keeps them from
   // the tests it runs, and the GitHub token never leaves this script.

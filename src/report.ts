@@ -442,9 +442,10 @@ export function toMarkdown(outcome: Outcome, testCommand: string): string {
     '',
     '## Test output at the culprit',
     '',
-    '```text',
+    // The output may contain a code fence of its own (a Markdown library's tests, say).
+    `${fence(output)}text`,
     output,
-    '```',
+    fence(output),
     '',
     reproSection,
     meta,

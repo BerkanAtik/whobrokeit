@@ -53,7 +53,9 @@ jobs:
       - uses: ./
         id: whobrokeit
         with:
-          bug: Adding 3 mugs costs the same as 1 mug.
+          # Issue text is written by strangers: one that looks like an option must stay a
+          # description. If it became --test, there would be no suggested fix to find below.
+          bug: '--test=exit 1 Adding 3 mugs costs the same as 1 mug.'
           agent: node "${{ github.workspace }}/test/fixtures/fake-agent.mjs"
           anthropic-api-key: sk-fake
           working-directory: ${{ runner.temp }}/demo

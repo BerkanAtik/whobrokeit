@@ -92,7 +92,8 @@ export function normalizeReproPath(path: string): { path: string } | { problem: 
   if (!clean || /^[a-zA-Z]:/.test(clean) || clean.startsWith('/') || parts.includes('..') || parts.includes('')) {
     return { problem: `<path> ${path} must be a relative path inside the repository.` };
   }
-  if (parts[0] === '.git') return { problem: '<path> must not be inside .git.' };
+  // Windows and macOS file systems ignore case: `.GIT` is the same folder there.
+  if (parts[0].toLowerCase() === '.git') return { problem: '<path> must not be inside .git.' };
   return { path: clean };
 }
 
