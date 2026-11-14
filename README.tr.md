@@ -92,6 +92,8 @@ Varsayılan olarak issue'nun başlığı ve metniyle çalışır. `/whobrokeit`'
 | `working-directory` | Aranacak repo, çalışma alanının kökü değilse. |
 | `comment` | Issue'ya yorum yazmasın istersen `false`. Rapor her durumda job özetinde de olur. |
 
+Claude Code yerine Codex kullanmak için `agent: codex` ver, OpenAI API anahtarını da bu adımın `env:` kısmında `CODEX_API_KEY: ${{ secrets.OPENAI_API_KEY }}` olarak geçir.
+
 Çıktılar: `exit-code`, `commit` (suçlu commit'in kısa hash'i) ve `report` (Markdown raporun yolu). Job yalnız bir hata olursa başarısız olur. Yeniden üretilemeyen bir hata da diğer sonuçlar gibi issue'ya yazılır.
 
 Bir issue'da çalıştırmadan önce issue'yu oku. Ajan yalnız kodu okur, ama yazdığı testi whobrokeit çalıştırır, ve issue metni ajanı yönlendirmeye çalışabilir. whobrokeit'in çalıştırdığı testlerin ortamında AI anahtarı da GitHub token'ı da olmaz; token da issue'ları değiştirebilir ama koduna dokunamaz. Yine de runner'daki kod aynı kullanıcıyla çalışır; harcama sınırı olan bir API anahtarı kullan.

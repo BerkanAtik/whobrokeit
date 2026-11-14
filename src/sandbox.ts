@@ -153,9 +153,13 @@ export class Sandbox {
   }
 
   async dispose(): Promise<void> {
-    await gitRaw(['worktree', 'remove', '--force', '--force', this.dir], this.repoRoot);
+    const remove = ['worktree', 'remove', '--force', '--force', this.dir];
+    const removed = await gitRaw(remove, this.repoRoot);
     await rm(this.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
-    await gitRaw(['worktree', 'prune'], this.repoRoot);
+    // If a file still open on Windows kept git from removing it, the entry goes once the folder
+    // is gone. Ours only: `git worktree prune` would also drop the user's own worktrees whose
+    // folder is missing for now, say on a drive that isn't mounted.
+    if (removed.code !== 0 && !existsSync(this.dir)) await gitRaw(remove, this.repoRoot);
   }
 
   /** The install command to run now, or null if dependencies are already in place. */
@@ -207,7 +211,8 @@ export class Sandbox {
 
   /** Whether git tracks this file, unlike installed or built ones. */
   async isTracked(file: string): Promise<boolean> {
-    return (await gitRaw(['ls-files', '--error-unmatch', '--', file], this.dir)).code === 0;
+    // Literal: as a pattern, pages/[id].js would also match a tracked pages/i.js.
+    return (await gitRaw(['--literal-pathspecs', 'ls-files', '--error-unmatch', '--', file], this.dir)).code === 0;
   }
 
   private async hasTool(tool: string): Promise<boolean> {

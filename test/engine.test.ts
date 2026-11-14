@@ -1,15 +1,16 @@
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { DEMO_REPRO, DEMO_TEST, createDemoRepo } from '../src/demo.js';
-import { findCulprit } from '../src/engine.js';
+import { findCulprit, type EngineEvent } from '../src/engine.js';
 import { runCommand } from '../src/exec.js';
 import { git } from '../src/git.js';
 import { colorFor, excerpt, formatDuration, palette, renderOutcome, timeAgo, toMarkdown } from '../src/report.js';
+import { Sandbox } from '../src/sandbox.js';
 
 const CLI = fileURLToPath(new URL('../src/cli.ts', import.meta.url));
 const cli = (args: string): string => `node --import ${import.meta.resolve('tsx')} "${CLI}" ${args}`;
@@ -117,6 +118,80 @@ test('signed commits read right, even with log.showSignature on', async () => {
     assert.equal(outcome.culprit.subject, 'broken');
     assert.match(outcome.parent.sha, /^[0-9a-f]{40}$/);
   } finally {
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+/** A repository with one commit per flag, each writing it to flag.txt. */
+async function flagRepo(flags: string[]): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), 'whobrokeit-flags-'));
+  await git(['init', '-q'], dir);
+  for (const flag of flags) {
+    await writeFile(join(dir, 'flag.txt'), flag);
+    await git(['add', '-A'], dir);
+    await git(['-c', 'user.name=T', '-c', 'user.email=t@example.com', 'commit', '-q', '-m', flag], dir);
+  }
+  return dir;
+}
+
+test("the repository's hooks never run in the checkouts it tests", async () => {
+  const dir = await flagRepo(['fine', 'broken', 'broken still']);
+  try {
+    // As a husky or lefthook post-checkout hook that fails.
+    await mkdir(join(dir, '.git', 'hooks'), { recursive: true });
+    await writeFile(join(dir, '.git', 'hooks', 'post-checkout'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    const outcome = await findCulprit({ cwd: dir, test: FLAG_TEST });
+    assert.equal(outcome.kind, 'found');
+  } finally {
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test("the user's own worktrees stay, even one whose folder is missing", async () => {
+  const dir = await flagRepo(['fine', 'broken']);
+  const away = `${dir}-away`;
+  try {
+    await git(['worktree', 'add', '-q', '--detach', away, 'HEAD'], dir);
+    // As on a drive that isn't mounted right now.
+    await rm(away, { recursive: true, force: true });
+    const outcome = await findCulprit({ cwd: dir, test: FLAG_TEST });
+    assert.equal(outcome.kind, 'found');
+    const list = await git(['worktree', 'list', '--porcelain'], dir);
+    assert.equal(list.match(/^worktree /gm)?.length, 2, list);
+  } finally {
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    await rm(away, { recursive: true, force: true });
+  }
+});
+
+test('walking back never runs the same commit twice', async () => {
+  // The test cannot run on the six oldest commits and fails on the four newest.
+  const dir = await flagRepo([0, 1, 2, 3, 4, 5].map((i) => `none ${i}`).concat([6, 7, 8, 9].map((i) => `broken ${i}`)));
+  const command = `node -e "const f=require('fs').readFileSync('flag.txt','utf8'); process.exit(f.startsWith('none')?125:f.startsWith('broken')?1:0)"`;
+  try {
+    const events: EngineEvent[] = [];
+    const outcome = await findCulprit({ cwd: dir, test: command, onEvent: (e) => events.push(e) });
+    assert.equal(outcome.kind, 'no-good-commit');
+    const tested = events.flatMap((e) => (e.type === 'check' && e.phase === 'find-good' ? [e.commit.subject] : []));
+    assert.equal(new Set(tested).size, tested.length, tested.join(', '));
+  } finally {
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('a file name with brackets is not read as a pattern', async () => {
+  // Next.js routes look like pages/[id].js; as a pattern, that matches pages/i.js.
+  const dir = await flagRepo(['fine']);
+  await mkdir(join(dir, 'pages'));
+  await writeFile(join(dir, 'pages', 'i.js'), 'x\n');
+  await git(['add', '-A'], dir);
+  await git(['-c', 'user.name=T', '-c', 'user.email=t@example.com', 'commit', '-q', '-m', 'page'], dir);
+  const sandbox = await Sandbox.create(dir, 'HEAD', [], false, 30_000);
+  try {
+    assert.equal(await sandbox.isTracked('pages/i.js'), true);
+    assert.equal(await sandbox.isTracked('pages/[id].js'), false);
+  } finally {
+    await sandbox.dispose();
     await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
 });

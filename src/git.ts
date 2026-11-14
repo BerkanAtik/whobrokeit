@@ -17,12 +17,18 @@ export class GitError extends Error {
   }
 }
 
+/**
+ * The repository's hooks (husky, lefthook) are for the user's own checkouts. In ours, a
+ * post-checkout hook would run for every commit tested, and one that fails would stop the search.
+ */
+export const NO_HOOKS = ['-c', 'core.hooksPath=/dev/null'];
+
 /** Runs git and returns the result, whatever the exit code. Exit code 127 means git is missing. */
 export function gitRaw(args: string[], cwd: string): Promise<GitResult> {
   return new Promise((resolve) => {
     execFile(
       'git',
-      args,
+      [...NO_HOOKS, ...args],
       {
         cwd,
         maxBuffer: 64 * 1024 * 1024,

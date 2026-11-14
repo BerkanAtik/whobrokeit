@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { mkdir, readdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { UserError } from './errors.js';
+import { NO_HOOKS } from './git.js';
 
 /**
  * Builds a small repo with a realistic history: 24 commits of a shopping-cart
@@ -137,7 +138,8 @@ export async function createDemoRepo(dir: string): Promise<void> {
 
 function gitIn(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}): Promise<void> {
   return new Promise((resolve, reject) => {
-    execFile('git', args, { cwd, env: { ...process.env, ...env }, windowsHide: true }, (err, _stdout, stderr) => {
+    // No hooks: --no-verify still runs prepare-commit-msg, which a global core.hooksPath can set.
+    execFile('git', [...NO_HOOKS, ...args], { cwd, env: { ...process.env, ...env }, windowsHide: true }, (err, _stdout, stderr) => {
       if (err) reject(new Error(`git ${args.join(' ')}: ${stderr || err.message}`));
       else resolve();
     });

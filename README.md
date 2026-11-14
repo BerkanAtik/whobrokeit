@@ -92,6 +92,8 @@ By default it works from the issue's title and body. Text after `/whobrokeit` re
 | `working-directory` | The repository to search, if it is not the workspace root. |
 | `comment` | Set to `false` to skip the issue comment. The report is in the job summary either way. |
 
+To use Codex instead of Claude Code, set `agent: codex` and give the step your OpenAI API key in its `env:` as `CODEX_API_KEY: ${{ secrets.OPENAI_API_KEY }}`.
+
 Outputs: `exit-code`, `commit` (short hash of the culprit) and `report` (path to the Markdown report). The job fails only on errors. A bug it could not reproduce is reported on the issue like any other result.
 
 Read an issue before you start a run on it. The agent only reads code, but whobrokeit runs the test it writes, and issue text can try to steer the agent. The tests whobrokeit runs never get the AI key or the GitHub token in their environment, and the token can change issues but not your code. Code on the runner runs as the same user, though, so use an API key with a spending limit.

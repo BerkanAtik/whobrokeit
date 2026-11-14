@@ -458,13 +458,19 @@ export async function findCulprit(opts: EngineOptions): Promise<Outcome> {
       let untestable = false;
       // Shown if nothing works: a typo in the command, or a test file older commits don't have.
       let rootOutput = '';
+      // The search between a broken and a skipped commit can come back to one it already ran.
+      const probed = new Map<number, { verdict: Verdict; sha: string }>();
       /** Tests the commit `distance` first-parent steps behind bad. */
       const probe = async (distance: number): Promise<{ verdict: Verdict; sha: string }> => {
-        const sha = distance >= rootDistance ? root : await git(['rev-parse', `${badSha}~${distance}`], repoRoot);
-        const { verdict, run } = await check('find-good', sha, `${badInput}~${Math.min(distance, rootDistance)}`);
+        const steps = Math.min(distance, rootDistance);
+        const known = probed.get(steps);
+        if (known) return known;
+        const sha = steps === rootDistance ? root : await git(['rev-parse', `${badSha}~${steps}`], repoRoot);
+        const { verdict, run } = await check('find-good', sha, `${badInput}~${steps}`);
         if (sha === root) rootOutput = run?.output ?? '';
         if (verdict === 'bad') lastBad = sha;
         if (verdict === 'skip') untestable = true;
+        probed.set(steps, { verdict, sha });
         return { verdict, sha };
       };
 
