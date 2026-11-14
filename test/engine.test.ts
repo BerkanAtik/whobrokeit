@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, test } from 'node:test';
@@ -41,6 +41,18 @@ test('works with an explicit --good commit', async () => {
   const outcome = await findCulprit({ cwd: repo, test: DEMO_TEST, withFiles: [DEMO_REPRO], good: 'HEAD~20' });
   assert.equal(outcome.kind, 'found');
   if (outcome.kind === 'found') assert.equal(outcome.culprit.subject, 'refactor: simplify subtotal with reduce');
+});
+
+test('works when the repository is reached through a link', async () => {
+  // As on macOS, where /tmp is a symlink, while git reports the real path.
+  const link = `${repo}-link`;
+  await symlink(repo, link, 'junction');
+  try {
+    const outcome = await findCulprit({ cwd: link, test: DEMO_TEST, withFiles: [DEMO_REPRO], good: 'HEAD~20' });
+    assert.equal(outcome.kind, 'found');
+  } finally {
+    await rm(link, { force: true });
+  }
 });
 
 test('says so when the test already passes', async () => {

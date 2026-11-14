@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, realpath } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import type { Agent } from './agent.js';
 import { UserError } from './errors.js';
@@ -534,10 +534,13 @@ async function resolveCommit(repoRoot: string, input: string, flag: string): Pro
 }
 
 async function readOverlays(cwd: string, repoRoot: string, files: string[]): Promise<Overlay[]> {
-  const root = resolve(repoRoot);
+  // Real paths on both sides: the folder may be reached through a symlink (/tmp on macOS) or a
+  // short Windows name, while git reports the repository's real location.
+  const root = await realpath(repoRoot).catch(() => resolve(repoRoot));
+  const base = await realpath(cwd).catch(() => resolve(cwd));
   return Promise.all(
     files.map(async (file) => {
-      const absolute = resolve(cwd, file);
+      const absolute = resolve(base, file);
       const rel = relative(root, absolute);
       if (!rel || rel.startsWith('..') || isAbsolute(rel)) {
         throw new UserError(`--with ${file} must be a file inside the repository.`);
