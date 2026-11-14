@@ -78,12 +78,12 @@ runs:
       run: npm ci --no-audit --no-fund --loglevel=error && npm run build --silent
 
     - name: Install Claude Code
-      if: inputs.agent == 'claude' && (inputs.test == '' && inputs.explain != 'false' || inputs.explain == 'true')
+      if: inputs.agent == 'claude' && (inputs.test == '' || inputs.explain == 'true')
       shell: bash
       run: command -v claude >/dev/null || npm install -g --no-audit --no-fund --loglevel=error @anthropic-ai/claude-code
 
     - name: Install Codex
-      if: inputs.agent == 'codex' && (inputs.test == '' && inputs.explain != 'false' || inputs.explain == 'true')
+      if: inputs.agent == 'codex' && (inputs.test == '' || inputs.explain == 'true')
       shell: bash
       run: command -v codex >/dev/null || npm install -g --no-audit --no-fund --loglevel=error @openai/codex
 

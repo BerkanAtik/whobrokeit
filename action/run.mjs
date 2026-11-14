@@ -101,8 +101,10 @@ async function main() {
   const explain = setting('EXPLAIN');
   if (test && explain === 'true') args.push('--explain');
   if (!test && explain === 'false') args.push('--no-explain');
-  if (setting('AGENT') && (!test || explain === 'true')) args.push(`--agent=${setting('AGENT')}`);
-  if (setting('MODEL')) args.push(`--model=${setting('MODEL')}`);
+  // With only a test, no agent runs, and the CLI rejects agent settings it would not use.
+  const usesAgent = !test || explain === 'true';
+  if (usesAgent && setting('AGENT')) args.push(`--agent=${setting('AGENT')}`);
+  if (usesAgent && setting('MODEL')) args.push(`--model=${setting('MODEL')}`);
   if (setting('GOOD')) args.push(`--good=${setting('GOOD')}`);
   if (setting('BAD')) args.push(`--bad=${setting('BAD')}`);
   if (setting('SETUP') === 'none') args.push('--no-setup');
