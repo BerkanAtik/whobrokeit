@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { mkdir, readdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { UserError } from './engine.js';
+import { UserError } from './errors.js';
 
 /**
  * Builds a small repo with a realistic history: 24 commits of a shopping-cart

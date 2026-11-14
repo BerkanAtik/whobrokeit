@@ -1,8 +1,22 @@
 import { readFile } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
+import type { Agent } from './agent.js';
+import { UserError } from './errors.js';
+import { applyEdits, buildExplainPrompt, parseExplanation, type FixAttempt } from './explain.js';
 import { git, gitRaw } from './git.js';
-import { Sandbox, type Evaluation, type Overlay, type SetupOption, type Verdict } from './sandbox.js';
+import {
+  buildPrompt,
+  classifyRepro,
+  explainMiss,
+  normalizeReproPath,
+  parseReply,
+  type Attempt,
+  type Repro,
+} from './repro.js';
+import { Sandbox, type Classifier, type Evaluation, type Overlay, type SetupOption, type Verdict } from './sandbox.js';
 
+export { UserError } from './errors.js';
+export type { Attempt, Repro } from './repro.js';
 export type { Verdict } from './sandbox.js';
 
 export interface CommitRef {
@@ -24,12 +38,20 @@ export interface CommitInfo extends CommitRef {
   files: FileChange[];
 }
 
-export type Phase = 'reproduce' | 'find-good' | 'bisect' | 'proof';
+export type Phase = 'write-test' | 'reproduce' | 'find-good' | 'bisect' | 'proof' | 'explain';
 
 export type EngineEvent =
   | { type: 'start'; repoRoot: string; bad: CommitRef; dirty: boolean; shallow: boolean; overlays: string[] }
-  | { type: 'phase'; phase: Phase; commits?: number; steps?: number }
+  | { type: 'phase'; phase: Phase; commits?: number; steps?: number; agent?: string }
   | { type: 'setup'; commit: CommitRef; command: string }
+  /** The agent was asked for attempt `attempt` of `of`. */
+  | { type: 'agent'; attempt: number; of: number }
+  | { type: 'activity'; text: string }
+  | { type: 'repro'; attempt: number; repro: Repro }
+  /** The agent's reply could not be used at all. */
+  | { type: 'rejected'; attempt: number; problem: string }
+  /** The agent proposed a fix touching these files; it is about to be tested. */
+  | { type: 'fix'; attempt: number; files: string[] }
   | {
       type: 'check';
       phase: Phase;
@@ -40,11 +62,33 @@ export type EngineEvent =
       note?: string;
     };
 
+export interface DescribeOptions {
+  /** The bug in plain words, as a user would report it. */
+  bug: string;
+  agent: Agent;
+  /** How many scripts the agent may try before giving up. Default 3. */
+  attempts?: number;
+  agentTimeoutMs?: number;
+}
+
+export interface ExplainOptions {
+  agent: Agent;
+  /** The bug in plain words, if the user gave one. In describe mode, the description is used. */
+  bug?: string;
+  /** How many fixes the agent may try. Default 2. */
+  attempts?: number;
+  agentTimeoutMs?: number;
+}
+
 export interface EngineOptions {
   /** Directory inside the repository. */
   cwd: string;
   /** Shell command: exit 0 = works, 125 = can't tell, anything else = broken. */
-  test: string;
+  test?: string;
+  /** Instead of `test`: describe the bug and let an agent write the test. */
+  describe?: DescribeOptions;
+  /** Once the culprit is proven, have an agent explain it and propose a fix, then test the fix. */
+  explain?: ExplainOptions;
   good?: string;
   bad?: string;
   setup?: SetupOption;
@@ -55,9 +99,37 @@ export interface EngineOptions {
   onEvent?: (event: EngineEvent) => void;
 }
 
+/** The test an agent wrote, once it has been seen failing at the bad commit. */
+export interface ReproInfo extends Repro {
+  agent: string;
+  /** Which attempt worked. */
+  attempts: number;
+}
+
+export interface SuggestedFix {
+  /** A unified diff against the bad commit. Apply it from the repository root with `git apply`. */
+  patch: string;
+  files: string[];
+  /** The test passed at the bad commit with this patch applied. */
+  verified: boolean;
+  /** How many fixes the agent needed. */
+  attempts: number;
+}
+
+export interface Explanation {
+  agent: string;
+  /** Why the culprit causes the bug, in a few sentences. */
+  why?: string;
+  /** Only set when the test passed with it. */
+  fix?: SuggestedFix;
+  /** Why there is no fix, or what went wrong while asking for one. */
+  note?: string;
+}
+
 interface Stats {
   checks: number;
   durationMs: number;
+  repro?: ReproInfo;
 }
 
 export type Outcome =
@@ -71,30 +143,40 @@ export type Outcome =
       proven: boolean;
       proof: { culprit: Verdict; parent: Verdict };
       failureOutput: string;
+      explanation?: Explanation;
     } & Stats)
   | ({ kind: 'not-reproduced'; bad: CommitRef; output: string } & Stats)
   | ({ kind: 'cannot-test'; bad: CommitRef; output: string; reason: string } & Stats)
-  | ({ kind: 'no-good-commit'; bad: CommitRef; oldest: CommitRef; shallow: boolean } & Stats)
+  | ({
+      kind: 'no-good-commit';
+      bad: CommitRef;
+      oldest: CommitRef;
+      shallow: boolean;
+      /** Some older commits could not run the test at all. */
+      untestable: boolean;
+    } & Stats)
   | ({ kind: 'good-fails'; good: CommitRef; output: string } & Stats)
-  | ({ kind: 'ambiguous'; candidates: CommitRef[] } & Stats);
-
-/** A problem the user can fix; printed without a stack trace. */
-export class UserError extends Error {
-  constructor(
-    message: string,
-    readonly hint?: string,
-  ) {
-    super(message);
-    this.name = 'UserError';
-  }
-}
+  | ({ kind: 'ambiguous'; candidates: CommitRef[] } & Stats)
+  | ({
+      kind: 'no-repro';
+      bad: CommitRef;
+      agent: string;
+      /** True when the agent itself said the bug can't be reproduced. */
+      gaveUp: boolean;
+      reason: string;
+      attempts: Attempt[];
+    } & Stats);
 
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
+/** Agent-written repros are meant to take seconds; this mostly covers a first build. */
+const REPRO_TIMEOUT_MS = 5 * 60 * 1000;
+const AGENT_TIMEOUT_MS = 15 * 60 * 1000;
 // Git 2.4x+ quotes the term ("the first 'bad' commit"); older versions don't.
 const FIRST_BAD = /^([0-9a-f]{40,64}) is the first '?bad'? commit/m;
 const ONLY_SKIPPED = /only '?skip'?ped commits left to test/;
 
 export async function findCulprit(opts: EngineOptions): Promise<Outcome> {
+  if (Boolean(opts.test) === Boolean(opts.describe)) throw new Error('findCulprit needs exactly one of test or describe.');
   const started = Date.now();
   const emit = opts.onEvent ?? (() => {});
 
@@ -126,22 +208,20 @@ export async function findCulprit(opts: EngineOptions): Promise<Outcome> {
   const bad = await ref(badSha);
   emit({ type: 'start', repoRoot, bad, dirty, shallow, overlays: overlays.map((o) => o.path) });
 
-  const sandbox = await Sandbox.create(
-    repoRoot,
-    badSha,
-    overlays,
-    opts.setup,
-    opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-  );
+  const timeoutMs = opts.timeoutMs ?? (opts.describe ? REPRO_TIMEOUT_MS : DEFAULT_TIMEOUT_MS);
+  const sandbox = await Sandbox.create(repoRoot, badSha, overlays, opts.setup, timeoutMs);
 
+  let test = opts.test ?? '';
+  let classify: Classifier | undefined;
+  let repro: ReproInfo | undefined;
   let checks = 0;
-  const stats = (): Stats => ({ checks, durationMs: Date.now() - started });
+  const stats = (): Stats => ({ checks, durationMs: Date.now() - started, ...(repro && { repro }) });
 
   const check = async (phase: Phase, sha: string, label?: string, checkout = true): Promise<Evaluation> => {
     opts.signal?.throwIfAborted();
     if (checkout) await sandbox.checkout(sha);
     const commit = await ref(sha);
-    const evaluation = await sandbox.evaluate(opts.test, (command) => emit({ type: 'setup', commit, command }));
+    const evaluation = await sandbox.evaluate(test, (command) => emit({ type: 'setup', commit, command }), classify);
     checks++;
     opts.signal?.throwIfAborted();
     emit({
@@ -156,21 +236,168 @@ export async function findCulprit(opts: EngineOptions): Promise<Outcome> {
     return evaluation;
   };
 
-  try {
-    // 1. The test must fail where the user says the bug is.
-    emit({ type: 'phase', phase: 'reproduce' });
-    const atBad = await check('reproduce', badSha, badInput, false);
-    if (atBad.verdict === 'good') {
-      return { kind: 'not-reproduced', bad, output: atBad.run?.output ?? '', ...stats() };
+  /** Has the agent write a test until one fails at the bad commit. Returns an outcome only when it can't. */
+  const reproduceWithAgent = async (describe: DescribeOptions): Promise<Outcome | undefined> => {
+    const max = describe.attempts ?? 3;
+    const agent = describe.agent.label;
+    const attempts: Attempt[] = [];
+    const miss = (attempt: number, problem: string, candidate?: Repro): void => {
+      emit({ type: 'rejected', attempt, problem });
+      attempts.push({ repro: candidate, problem: `whobrokeit could not use it: ${problem}` });
+    };
+    emit({ type: 'phase', phase: 'write-test', agent });
+
+    for (let n = 1; n <= max; n++) {
+      opts.signal?.throwIfAborted();
+      emit({ type: 'agent', attempt: n, of: max });
+      const answer = await describe.agent.ask(
+        buildPrompt({ bug: describe.bug, commit: bad, attempts, maxAttempts: max }),
+        sandbox.dir,
+        { timeoutMs: describe.agentTimeoutMs ?? AGENT_TIMEOUT_MS, onActivity: (text) => emit({ type: 'activity', text }) },
+      );
+      opts.signal?.throwIfAborted();
+
+      const reply = parseReply(answer);
+      if (reply.kind === 'cannot') {
+        return { kind: 'no-repro', bad, agent, gaveUp: true, reason: reply.reason, attempts, ...stats() };
+      }
+      if (reply.kind === 'invalid') {
+        miss(n, reply.problem);
+        continue;
+      }
+      const normalized = normalizeReproPath(reply.repro.path);
+      if ('problem' in normalized) {
+        miss(n, normalized.problem, reply.repro);
+        continue;
+      }
+      const candidate: Repro = { ...reply.repro, path: normalized.path };
+      const exists = await gitRaw(['cat-file', '-e', `${badSha}:${candidate.path}`], repoRoot);
+      if (exists.code === 0 || overlays.some((o) => o.path === candidate.path)) {
+        miss(n, `${candidate.path} already exists. Write a new file and never replace existing ones.`, candidate);
+        continue;
+      }
+
+      emit({ type: 'repro', attempt: n, repro: candidate });
+      sandbox.overlays = [...overlays, { path: candidate.path, content: Buffer.from(candidate.code) }];
+      test = candidate.command;
+      classify = classifyRepro;
+      const evaluation = await check('write-test', badSha, `attempt ${n}`, false);
+      if (evaluation.verdict === 'bad') {
+        repro = { ...candidate, agent, attempts: n };
+        return undefined;
+      }
+      if (evaluation.reason === 'dependencies failed to install') {
+        return { kind: 'cannot-test', bad, output: evaluation.run?.output ?? '', reason: evaluation.reason, ...stats() };
+      }
+      attempts.push({ repro: candidate, problem: explainMiss(evaluation.run, timeoutMs), output: evaluation.run?.output });
     }
-    if (atBad.verdict === 'skip') {
-      return {
-        kind: 'cannot-test',
-        bad,
-        output: atBad.run?.output ?? '',
-        reason: atBad.reason ?? 'the test exited with 125 ("skip")',
-        ...stats(),
-      };
+
+    const reason = `None of the ${max} attempts produced a test that fails at ${bad.short}.`;
+    return { kind: 'no-repro', bad, agent, gaveUp: false, reason, attempts, ...stats() };
+  };
+
+  /** Asks the agent why the culprit broke it, then tries its fix at the bad commit. */
+  const explainCulprit = async (
+    explain: ExplainOptions,
+    culprit: CommitInfo,
+    parentSha: string,
+    failureOutput: string,
+  ): Promise<Explanation> => {
+    const max = explain.attempts ?? 2;
+    const agent = explain.agent.label;
+    const attempts: FixAttempt[] = [];
+    let why: string | undefined;
+    let note: string | undefined;
+    emit({ type: 'phase', phase: 'explain', agent });
+
+    const diff = await git(['diff', '--no-color', '--no-ext-diff', parentSha, culprit.sha], repoRoot);
+    const behind = Number(await git(['rev-list', '--count', `${culprit.sha}..${badSha}`], repoRoot));
+    // Fixes must leave the test itself and every file whobrokeit drops in alone.
+    const protectedPaths = sandbox.overlays.map((o) => o.path);
+
+    try {
+      for (let n = 1; n <= max; n++) {
+        opts.signal?.throwIfAborted();
+        emit({ type: 'agent', attempt: n, of: max });
+        await sandbox.checkout(badSha);
+        const answer = await explain.agent.ask(
+          buildExplainPrompt({
+            bug: explain.bug ?? opts.describe?.bug,
+            test,
+            testFile: repro && { path: repro.path, code: repro.code },
+            failureOutput,
+            culprit,
+            diff,
+            bad,
+            behind,
+            attempts,
+            maxAttempts: max,
+          }),
+          sandbox.dir,
+          { timeoutMs: explain.agentTimeoutMs ?? AGENT_TIMEOUT_MS, onActivity: (text) => emit({ type: 'activity', text }) },
+        );
+        opts.signal?.throwIfAborted();
+
+        const reply = parseExplanation(answer);
+        why = reply.why ?? why;
+        if (reply.kind === 'nofix') return { agent, why, note: `${agent} did not suggest a fix: ${reply.reason}` };
+        if (reply.kind === 'invalid') {
+          emit({ type: 'rejected', attempt: n, problem: reply.problem });
+          note = `${agent}'s reply could not be used: ${reply.problem}`;
+          attempts.push({ edits: [], problem: `whobrokeit could not use it: ${reply.problem}` });
+          continue;
+        }
+
+        const applied = await applyEdits(sandbox.dir, reply.edits, protectedPaths);
+        if ('problem' in applied) {
+          await sandbox.clean();
+          emit({ type: 'rejected', attempt: n, problem: applied.problem });
+          note = `${agent}'s fix could not be applied: ${applied.problem}`;
+          attempts.push({ edits: reply.edits, problem: `whobrokeit could not apply it: ${applied.problem}` });
+          continue;
+        }
+
+        const patch = `${await git(['diff', '--no-color', '--no-ext-diff'], sandbox.dir)}\n`;
+        emit({ type: 'fix', attempt: n, files: applied.files });
+        const evaluation = await check('explain', badSha, 'with fix', false);
+        if (evaluation.verdict === 'good') {
+          return { agent, why, fix: { patch, files: applied.files, verified: true, attempts: n } };
+        }
+        const problem =
+          evaluation.verdict === 'bad'
+            ? `the test still fails at ${bad.short} with this fix.`
+            : `the test could not run at ${bad.short} with this fix (${evaluation.reason ?? `exit code ${evaluation.run?.code}`}).`;
+        note = `${agent}'s fix did not work: ${problem}`;
+        attempts.push({ edits: reply.edits, problem, output: evaluation.run?.output });
+      }
+    } catch (err) {
+      if (opts.signal?.aborted || !(err instanceof UserError)) throw err;
+      return { agent, why, note: err.message };
+    }
+    return { agent, why, note };
+  };
+
+  try {
+    if (opts.describe) {
+      // 1. An agent writes a test, and we watch it fail here before trusting it.
+      const early = await reproduceWithAgent(opts.describe);
+      if (early) return early;
+    } else {
+      // 1. The test must fail where the user says the bug is.
+      emit({ type: 'phase', phase: 'reproduce' });
+      const atBad = await check('reproduce', badSha, badInput, false);
+      if (atBad.verdict === 'good') {
+        return { kind: 'not-reproduced', bad, output: atBad.run?.output ?? '', ...stats() };
+      }
+      if (atBad.verdict === 'skip') {
+        return {
+          kind: 'cannot-test',
+          bad,
+          output: atBad.run?.output ?? '',
+          reason: atBad.reason ?? 'the test exited with 125 ("skip")',
+          ...stats(),
+        };
+      }
     }
 
     // 2. Find a commit where it still worked: walk back 1, 2, 4, 8... commits.
@@ -186,20 +413,46 @@ export async function findCulprit(opts: EngineOptions): Promise<Outcome> {
       good = givenGood;
     } else {
       const root = (await git(['rev-list', '--first-parent', '--max-parents=0', badSha], repoRoot)).split('\n')[0];
-      if (root === badSha) return { kind: 'no-good-commit', bad, oldest: bad, shallow, ...stats() };
+      if (root === badSha) return { kind: 'no-good-commit', bad, oldest: bad, shallow, untestable: false, ...stats() };
+      const rootDistance = Number(await git(['rev-list', '--count', '--first-parent', `${root}..${badSha}`], repoRoot));
 
-      for (let n = 1; ; n *= 2) {
-        const probe = await gitRaw(['rev-parse', '--verify', '--quiet', `${badSha}~${n}^{commit}`], repoRoot);
-        const sha = probe.code === 0 ? probe.stdout.trim() : root;
-        const distance =
-          probe.code === 0 ? n : Number(await git(['rev-list', '--count', '--first-parent', `${root}..${badSha}`], repoRoot));
-        const evaluation = await check('find-good', sha, `${badInput}~${distance}`);
-        if (evaluation.verdict === 'good') {
-          good = sha;
+      let untestable = false;
+      /** Tests the commit `distance` first-parent steps behind bad. */
+      const probe = async (distance: number): Promise<{ verdict: Verdict; sha: string }> => {
+        const sha = distance >= rootDistance ? root : await git(['rev-parse', `${badSha}~${distance}`], repoRoot);
+        const { verdict } = await check('find-good', sha, `${badInput}~${Math.min(distance, rootDistance)}`);
+        if (verdict === 'bad') lastBad = sha;
+        if (verdict === 'skip') untestable = true;
+        return { verdict, sha };
+      };
+
+      let lo = 0; // distance of the oldest commit known to be broken
+      walk: for (let n = 1; ; n = Math.min(n * 2, rootDistance)) {
+        const first = await probe(n);
+        if (first.verdict === 'good') {
+          good = first.sha;
           break;
         }
-        if (evaluation.verdict === 'bad') lastBad = sha;
-        if (sha === root) return { kind: 'no-good-commit', bad, oldest: await ref(root), shallow, ...stats() };
+        if (first.verdict === 'bad') {
+          lo = n;
+        } else {
+          // Older code often can't run the test at all (it needs something added later),
+          // so look between the last broken commit and this one before going further back.
+          let hi = n;
+          while (hi - lo > 1) {
+            const mid = Math.floor((lo + hi) / 2);
+            const next = await probe(mid);
+            if (next.verdict === 'good') {
+              good = next.sha;
+              break walk;
+            }
+            if (next.verdict === 'bad') lo = mid;
+            else hi = mid;
+          }
+        }
+        if (n >= rootDistance) {
+          return { kind: 'no-good-commit', bad, oldest: await ref(root), shallow, untestable, ...stats() };
+        }
       }
     }
 
@@ -240,16 +493,24 @@ export async function findCulprit(opts: EngineOptions): Promise<Outcome> {
     const parentSha = await git(['rev-parse', `${culpritSha}^`], repoRoot);
     const atCulprit = await check('proof', culpritSha, 'culprit');
     const atParent = await check('proof', parentSha, 'parent');
+    const proven = atCulprit.verdict === 'bad' && atParent.verdict === 'good';
+    const culprit = await commitInfo(repoRoot, culpritSha, parentSha);
+    const failureOutput = atCulprit.run?.output ?? '';
+
+    // 5. Why, and a fix that has been seen to make the test pass.
+    const explanation =
+      opts.explain && proven ? await explainCulprit(opts.explain, culprit, parentSha, failureOutput) : undefined;
 
     return {
       kind: 'found',
-      culprit: await commitInfo(repoRoot, culpritSha, parentSha),
+      culprit,
       parent: await ref(parentSha),
       good: await ref(good),
       bad,
-      proven: atCulprit.verdict === 'bad' && atParent.verdict === 'good',
+      proven,
       proof: { culprit: atCulprit.verdict, parent: atParent.verdict },
-      failureOutput: atCulprit.run?.output ?? '',
+      failureOutput,
+      ...(explanation && { explanation }),
       ...stats(),
     };
   } finally {

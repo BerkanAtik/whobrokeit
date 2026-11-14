@@ -2,16 +2,24 @@ import { spawn, type ChildProcess } from 'node:child_process';
 
 export interface RunResult {
   code: number;
+  /** stdout and stderr interleaved, capped at the last 200 KB. */
   output: string;
   timedOut: boolean;
   durationMs: number;
+}
+
+export interface RunOptions {
+  /** Written to stdin, which is then closed. Without it, stdin is empty. */
+  input?: string;
+  /** Called with stdout as it arrives (whole characters, any chunking). */
+  onStdout?: (text: string) => void;
 }
 
 const MAX_OUTPUT = 200_000;
 const active = new Set<ChildProcess>();
 
 /** Runs a shell command and captures combined stdout/stderr. Never rejects. */
-export function runCommand(command: string, cwd: string, timeoutMs: number): Promise<RunResult> {
+export function runCommand(command: string, cwd: string, timeoutMs: number, options: RunOptions = {}): Promise<RunResult> {
   return new Promise((resolve) => {
     const started = Date.now();
     const env: NodeJS.ProcessEnv = { ...process.env, CI: '1', NO_COLOR: '1' };
@@ -23,20 +31,28 @@ export function runCommand(command: string, cwd: string, timeoutMs: number): Pro
       cwd,
       env,
       shell: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: [options.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
       windowsHide: true,
       // Own process group on POSIX so a timeout can kill the whole tree.
       detached: process.platform !== 'win32',
     });
     active.add(child);
 
+    if (options.input !== undefined && child.stdin) {
+      child.stdin.on('error', () => {}); // the command may exit without reading it
+      child.stdin.end(options.input);
+    }
+
     let output = '';
-    const collect = (chunk: Buffer): void => {
-      output += chunk.toString('utf8');
+    const collect = (text: string): void => {
+      output += text;
       if (output.length > MAX_OUTPUT) output = output.slice(-MAX_OUTPUT);
     };
-    child.stdout?.on('data', collect);
-    child.stderr?.on('data', collect);
+    child.stdout?.setEncoding('utf8').on('data', (text: string) => {
+      collect(text);
+      options.onStdout?.(text);
+    });
+    child.stderr?.setEncoding('utf8').on('data', collect);
 
     let timedOut = false;
     const timer = setTimeout(() => {

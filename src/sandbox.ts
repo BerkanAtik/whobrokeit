@@ -23,6 +23,15 @@ export interface Overlay {
 /** `undefined` = detect automatically, `false` = never install, string = custom command. */
 export type SetupOption = string | false | undefined;
 
+/** Turns a finished run into a verdict. */
+export type Classifier = (run: RunResult) => { verdict: Verdict; reason?: string };
+
+/** The git bisect convention: 0 = good, 125 = skip, anything else = bad. */
+export const exitCodeVerdict: Classifier = (run) => ({
+  verdict: run.code === 0 ? 'good' : run.code === 125 ? 'skip' : 'bad',
+  reason: run.timedOut ? 'timed out' : undefined,
+});
+
 const JS_LOCKFILES: Array<[file: string, command: string]> = [
   ['pnpm-lock.yaml', 'pnpm install --frozen-lockfile'],
   ['yarn.lock', 'yarn install --frozen-lockfile'],
@@ -31,6 +40,9 @@ const JS_LOCKFILES: Array<[file: string, command: string]> = [
   ['package-lock.json', 'npm ci --no-audit --no-fund'],
   ['npm-shrinkwrap.json', 'npm ci --no-audit --no-fund'],
 ];
+
+// No lockfile is written: it would be an untracked file that outlives the commit it belongs to.
+const NPM_INSTALL = 'npm install --no-audit --no-fund --no-package-lock';
 
 const DEPENDENCY_FILES = [
   'package.json',
@@ -52,12 +64,14 @@ const hash = (data: string | Buffer): string => createHash('sha1').update(data).
  */
 export class Sandbox {
   private installedKey: string | null = null;
+  private readonly tools = new Map<string, boolean>();
 
   private constructor(
     readonly repoRoot: string,
     readonly dir: string,
     private readonly base: string,
-    private readonly overlays: Overlay[],
+    /** Files written into every commit before the test runs. Can change between runs. */
+    public overlays: Overlay[],
     private readonly setup: SetupOption,
     private readonly timeoutMs: number,
   ) {}
@@ -93,7 +107,11 @@ export class Sandbox {
   }
 
   /** Runs the test on whatever commit is checked out and leaves the tree clean. */
-  async evaluate(test: string, onSetup?: (command: string) => void): Promise<Evaluation> {
+  async evaluate(
+    test: string,
+    onSetup?: (command: string) => void,
+    classify: Classifier = exitCodeVerdict,
+  ): Promise<Evaluation> {
     try {
       for (const overlay of this.overlays) {
         const target = join(this.dir, overlay.path);
@@ -113,8 +131,7 @@ export class Sandbox {
       }
 
       const run = await runCommand(test, this.dir, this.timeoutMs);
-      const verdict: Verdict = run.code === 0 ? 'good' : run.code === 125 ? 'skip' : 'bad';
-      return { verdict, run, reason: run.timedOut ? 'timed out' : undefined };
+      return { ...classify(run), run };
     } finally {
       await this.clean();
     }
@@ -148,7 +165,12 @@ export class Sandbox {
 
     for (const [file, command] of JS_LOCKFILES) {
       const lock = await readFile(join(this.dir, file)).catch(() => null);
-      if (lock) return { command, key: `${command}:${hash(lock)}` };
+      // Only a committed lockfile counts. An ignored one is left over from an install at another
+      // commit; trusting it kept that commit's dependencies in place for the whole search.
+      if (!lock || !(await this.isTracked(file))) continue;
+      if (await this.hasTool(command.split(' ')[0])) return { command, key: `${command}:${hash(lock)}` };
+      // pnpm, yarn or bun is not installed: npm can still install from package.json.
+      return { command: NPM_INSTALL, key: `${NPM_INSTALL}:${hash(lock)}` };
     }
 
     let pkg: Record<string, unknown>;
@@ -163,8 +185,20 @@ export class Sandbox {
       ...(pkg.optionalDependencies as object | undefined),
     };
     if (Object.keys(deps).length === 0) return null;
-    const command = 'npm install --no-audit --no-fund';
-    return { command, key: `${command}:${hash(JSON.stringify(deps))}` };
+    return { command: NPM_INSTALL, key: `${NPM_INSTALL}:${hash(JSON.stringify(deps))}` };
+  }
+
+  private async isTracked(file: string): Promise<boolean> {
+    return (await gitRaw(['ls-files', '--error-unmatch', '--', file], this.dir)).code === 0;
+  }
+
+  private async hasTool(tool: string): Promise<boolean> {
+    let found = this.tools.get(tool);
+    if (found === undefined) {
+      found = (await runCommand(`${tool} --version`, this.dir, 30_000)).code === 0;
+      this.tools.set(tool, found);
+    }
+    return found;
   }
 
   private async dependencyFingerprint(): Promise<string | null> {

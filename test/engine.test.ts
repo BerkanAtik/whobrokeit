@@ -6,7 +6,7 @@ import { after, before, test } from 'node:test';
 import { DEMO_REPRO, DEMO_TEST, createDemoRepo } from '../src/demo.js';
 import { findCulprit } from '../src/engine.js';
 import { git } from '../src/git.js';
-import { excerpt, timeAgo } from '../src/report.js';
+import { colorFor, excerpt, timeAgo } from '../src/report.js';
 
 let repo: string;
 
@@ -75,4 +75,25 @@ test('timeAgo reads naturally', () => {
   const now = Date.parse('2026-11-14T12:00:00Z');
   assert.equal(timeAgo('2026-11-02T12:00:00Z', now), '2 weeks ago');
   assert.equal(timeAgo('2026-11-13T12:00:00Z', now), 'yesterday');
+});
+
+test('excerpt drops color codes from test output', () => {
+  assert.equal(excerpt('\x1b[31mnot ok 1 - a\x1b[39m\n')[0], 'not ok 1 - a');
+});
+
+test('FORCE_COLOR turns color on without a terminal, and 0 turns it off', () => {
+  const saved = { force: process.env.FORCE_COLOR, no: process.env.NO_COLOR };
+  const pipe = { isTTY: false } as NodeJS.WriteStream;
+  try {
+    process.env.FORCE_COLOR = '1';
+    process.env.NO_COLOR = '1';
+    assert.equal(colorFor(pipe).red('x'), '\x1b[31mx\x1b[39m');
+    process.env.FORCE_COLOR = '0';
+    assert.equal(colorFor({ isTTY: true } as NodeJS.WriteStream).red('x'), 'x');
+  } finally {
+    for (const [key, value] of [['FORCE_COLOR', saved.force], ['NO_COLOR', saved.no]] as const) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 });
