@@ -2,6 +2,8 @@
 
 **Find the commit that broke it, and prove it.**
 
+[![npm](https://img.shields.io/npm/v/whobrokeit)](https://www.npmjs.com/package/whobrokeit) [![CI](https://github.com/BerkanAtik/whobrokeit/actions/workflows/ci.yml/badge.svg)](https://github.com/BerkanAtik/whobrokeit/actions/workflows/ci.yml) [![GitHub Marketplace](https://img.shields.io/badge/Marketplace-whobrokeit%20bisect-blue?logo=github)](https://github.com/marketplace/actions/whobrokeit-bisect) [![License: MIT](https://img.shields.io/npm/l/whobrokeit)](https://github.com/BerkanAtik/whobrokeit/blob/main/LICENSE)
+
 English · [Türkçe](README.tr.md)
 
 Describe a bug in one sentence. An AI agent writes a test that shows it, whobrokeit walks your git history to the first commit where that test fails, and proves the result: the test fails at that commit and passes at its parent. Then it explains what went wrong and suggests a fix, which it shows only after the test passes with it.

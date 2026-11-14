@@ -2,6 +2,8 @@
 
 **Hatayı getiren commit'i bulur ve kanıtlar.**
 
+[![npm](https://img.shields.io/npm/v/whobrokeit)](https://www.npmjs.com/package/whobrokeit) [![CI](https://github.com/BerkanAtik/whobrokeit/actions/workflows/ci.yml/badge.svg)](https://github.com/BerkanAtik/whobrokeit/actions/workflows/ci.yml) [![GitHub Marketplace](https://img.shields.io/badge/Marketplace-whobrokeit%20bisect-blue?logo=github)](https://github.com/marketplace/actions/whobrokeit-bisect) [![License: MIT](https://img.shields.io/npm/l/whobrokeit)](https://github.com/BerkanAtik/whobrokeit/blob/main/LICENSE)
+
 [English](README.md) · Türkçe
 
 Hatayı tek cümleyle anlatırsın. Bir yapay zekâ ajanı hatayı gösteren bir test yazar; whobrokeit git geçmişinde bu testin ilk başarısız olduğu commit'e kadar gider ve sonucu kanıtlar: test o commit'te başarısız, bir öncekinde başarılıdır. Ardından neyin bozulduğunu açıklar ve bir düzeltme önerir. Düzeltmeyi ancak test onunla geçtikten sonra gösterir.
