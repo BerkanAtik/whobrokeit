@@ -97,7 +97,8 @@ function claudeAgent(model?: string): Agent {
         await rm(dir, { recursive: true, force: true }).catch(() => {});
       }
       lines.flush();
-      failIfBroken(label, run, timeoutMs, result === undefined);
+      // Its own error message (a bad key, no credit) says more than the exit code does.
+      if (!result?.isError || run.timedOut) failIfBroken(label, run, timeoutMs, result === undefined);
       if (result?.isError) {
         throw new UserError(`${label} stopped with an error: ${result.text || result.subtype || 'unknown error'}`);
       }
