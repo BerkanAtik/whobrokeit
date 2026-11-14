@@ -65,13 +65,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0               # whobrokeit geçmişe ihtiyaç duyar
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: 22             # projen hangisini kullanıyorsa
+          node-version: 22             # en az 22, Claude Code bunu istiyor
+          package-manager-cache: false # issue'dan yazılan testler önbelleğe ulaşmasın
       - uses: BerkanAtik/whobrokeit@v0
         with:
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -91,7 +92,7 @@ Varsayılan olarak issue'nun başlığı ve metniyle çalışır. `/whobrokeit`'
 
 Çıktılar: `exit-code`, `commit` (suçlu commit'in kısa hash'i) ve `report` (Markdown raporun yolu). Job yalnız bir hata olursa başarısız olur. Yeniden üretilemeyen bir hata da diğer sonuçlar gibi issue'ya yazılır.
 
-Bir issue'da çalıştırmadan önce issue'yu oku. Ajan yalnız kodu okur, ama yazdığı testi whobrokeit çalıştırır, ve issue metni ajanı yönlendirmeye çalışabilir. whobrokeit'in çalıştırdığı testlerin ortamında AI anahtarı da GitHub token'ı da olmaz, token da yorumlar dışında hiçbir şeyi değiştiremez. Yine de runner'daki kod aynı kullanıcıyla çalışır; harcama sınırı olan bir API anahtarı kullan.
+Bir issue'da çalıştırmadan önce issue'yu oku. Ajan yalnız kodu okur, ama yazdığı testi whobrokeit çalıştırır, ve issue metni ajanı yönlendirmeye çalışabilir. whobrokeit'in çalıştırdığı testlerin ortamında AI anahtarı da GitHub token'ı da olmaz; token da issue'ları değiştirebilir ama koduna dokunamaz. Yine de runner'daki kod aynı kullanıcıyla çalışır; harcama sınırı olan bir API anahtarı kullan.
 
 ## Ne yapar
 
@@ -136,6 +137,7 @@ commander, semver, postcss, luxon, marked, express, markdown-it, fastify ve yarg
 - Test, projenin kullandığı herhangi bir dilde olabilir. Otomatik bağımlılık kurulumu JavaScript paket yöneticilerini kapsar; diğerleri için `--setup` kullan.
 - Ajanla bir çalıştırma genelde iki istek yapar: biri testi yazmak, biri suçlu commit'i açıklamak için (sonuç tutmazsa her biri bir kez daha denenir). Demo reposunda tüm süreç 30–60 saniye sürer.
 - Proje lockfile commit'lemiyorsa eski commit'ler bağımlılıklarının bugünkü sürümleriyle kurulur. Bir bağımlılığın sürümüne bağlı hatalarda yanlış commit bulunabilir.
+- Bağımlılıklar değiştikçe yeniden kurulur, ama commit'ler arasında hiçbir şey yeniden derlenmez. Testin derlenmiş dosyalarla çalışıyorsa (örneğin `dist/`), derlemeyi komuta ekle: `--test "npm run build && npm test"`. Ajana da aynısı söylenir.
 - İş bitince ajanın yazdığı test ve düzeltme `.git/whobrokeit/` içinde durur, çalışma klasörünün dışında.
 
 ## Lisans

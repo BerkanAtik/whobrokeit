@@ -1,7 +1,7 @@
 // The GitHub Action: works out what to look for from the issue, runs the whobrokeit CLI and
 // replies on the issue with its report. Settings arrive as WBI_* variables from action.yml.
 import { spawn, spawnSync } from 'node:child_process';
-import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -9,6 +9,8 @@ const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'dist', 'cli.js'
 const MAX_BUG = 8000;
 const MAX_COMMENT = 60_000;
 const HOME = 'https://github.com/BerkanAtik/whobrokeit';
+/** GitHub credentials the CLI and its agent never need, kept back even when the workflow sets them. */
+const GITHUB_SECRETS = ['GITHUB_TOKEN', 'GH_TOKEN', 'ACTIONS_RUNTIME_TOKEN', 'ACTIONS_ID_TOKEN_REQUEST_TOKEN', 'ACTIONS_ID_TOKEN_REQUEST_URL'];
 
 const setting = (name) => (process.env[`WBI_${name}`] ?? '').trim();
 const event = process.env.GITHUB_EVENT_PATH ? JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8')) : {};
@@ -25,8 +27,15 @@ function bugText() {
   if (given) return given;
   const command = /^\/whobrokeit\b[ \t]*([\s\S]*)/.exec((event.comment?.body ?? '').trim());
   const text = command?.[1]?.trim() || (issue ? `${issue.title}\n\n${issue.body ?? ''}` : '');
-  // Issue templates leave their instructions behind as HTML comments.
-  return text.replace(/<!--[\s\S]*?-->/g, '').replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim().slice(0, MAX_BUG);
+  // Issue templates leave their instructions behind as HTML comments. A NUL byte can't be passed
+  // as an argument at all.
+  return text
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\0/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+    .slice(0, MAX_BUG);
 }
 
 async function github(method, path, body) {
@@ -87,7 +96,7 @@ async function main() {
   }
 
   const shallow = spawnSync('git', ['rev-parse', '--is-shallow-repository'], { encoding: 'utf8' });
-  if (shallow.stdout.trim() === 'true') {
+  if (shallow.stdout?.trim() === 'true') {
     const message = 'The checkout has no history. Set `fetch-depth: 0` on `actions/checkout`.';
     console.log(`::error::${message}`);
     await reply(`**whobrokeit could not run.** ${message}\n${footer()}`);
@@ -95,6 +104,8 @@ async function main() {
   }
 
   const report = join(process.env.RUNNER_TEMP ?? '.', 'whobrokeit-report.md');
+  // An earlier run in this job may have left one; it must not pass for this run's.
+  rmSync(report, { force: true });
   // Values go in as `--name=value`, and the bug after `--`: issue text is written by strangers,
   // and a title like "--test=<command>" must stay a description, never become an option.
   const args = test ? [`--test=${test}`] : [];
@@ -116,7 +127,9 @@ async function main() {
   // Only the agent gets credentials, under the names it expects. whobrokeit keeps them from
   // the tests it runs, and the GitHub token never leaves this script.
   const env = { ...process.env, FORCE_COLOR: '1' };
-  for (const name of Object.keys(env)) if (name.startsWith('WBI_')) delete env[name];
+  for (const name of Object.keys(env)) {
+    if (name.startsWith('WBI_') || GITHUB_SECRETS.includes(name.toUpperCase())) delete env[name];
+  }
   // A token copied from a terminal often picks up a line break in the middle; keys have no spaces.
   for (const name of ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN']) {
     const value = setting(name).replace(/\s+/g, '');
@@ -124,7 +137,11 @@ async function main() {
   }
 
   if (shouldComment) {
-    await github('POST', `${issuePath}/reactions`, { content: 'eyes' }).catch(() => {});
+    // On the /whobrokeit comment that started the run, so each one gets its own; else on the issue.
+    const target = event.comment
+      ? `/repos/${process.env.GITHUB_REPOSITORY}/issues/comments/${event.comment.id}`
+      : issuePath;
+    await github('POST', `${target}/reactions`, { content: 'eyes' }).catch(() => {});
   }
 
   const { code, tail } = await runCli(args, env);

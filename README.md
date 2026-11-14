@@ -65,13 +65,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0               # whobrokeit needs the history
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: 22             # whatever your project uses
+          node-version: 22             # at least 22, which Claude Code needs
+          package-manager-cache: false # tests written from an issue must not reach the cache
       - uses: BerkanAtik/whobrokeit@v0
         with:
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -91,7 +92,7 @@ By default it works from the issue's title and body. Text after `/whobrokeit` re
 
 Outputs: `exit-code`, `commit` (short hash of the culprit) and `report` (path to the Markdown report). The job fails only on errors. A bug it could not reproduce is reported on the issue like any other result.
 
-Read an issue before you start a run on it. The agent only reads code, but whobrokeit runs the test it writes, and issue text can try to steer the agent. The tests whobrokeit runs never get the AI key or the GitHub token in their environment, and the token can't change anything but comments. Code on the runner runs as the same user, though, so use an API key with a spending limit.
+Read an issue before you start a run on it. The agent only reads code, but whobrokeit runs the test it writes, and issue text can try to steer the agent. The tests whobrokeit runs never get the AI key or the GitHub token in their environment, and the token can change issues but not your code. Code on the runner runs as the same user, though, so use an API key with a spending limit.
 
 ## What it does
 
@@ -136,6 +137,7 @@ Exit codes: `0` found and proven · `1` error · `2` bug not reproduced · `3` n
 - The test can be in any language your project uses. Automatic dependency install covers JavaScript package managers; for other stacks, use `--setup`.
 - With an agent, a run usually makes two requests: one to write the test, one to explain the culprit (each is retried once if its result doesn't hold up). On the demo repo the whole run takes 30 to 60 seconds.
 - If the project commits no lockfile, old commits get today's versions of their dependencies. A bug that depends on a dependency's version can then be traced to the wrong commit.
+- Dependencies are reinstalled when they change, but nothing is rebuilt between commits. If your test runs against built files (say `dist/`), put the build in the command: `--test "npm run build && npm test"`. The agent is told to do the same.
 - After a run, the agent's test and the fix are in `.git/whobrokeit/`, outside your working tree.
 
 ## License
