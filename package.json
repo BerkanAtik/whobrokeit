@@ -1,0 +1,40 @@
+{
+  "name": "whobrokeit",
+  "version": "0.1.0",
+  "description": "Find the commit that broke it, and prove it.",
+  "type": "module",
+  "bin": {
+    "whobrokeit": "dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/cli.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --import tsx --test test/*.test.ts"
+  },
+  "keywords": [
+    "git",
+    "bisect",
+    "regression",
+    "debugging",
+    "cli",
+    "claude-code",
+    "codex"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BerkanAtik/whobrokeit.git"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3"
+  }
+}

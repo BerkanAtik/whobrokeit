@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.log
+
+# Private planning notes (Turkish), not part of the project
+BASLANGIC.md
+.claude/
