@@ -1,4 +1,4 @@
-name: whobrokeit
+name: whobrokeit bisect
 description: Find the commit that broke it, prove it, and reply on the issue with the culprit and a tested fix.
 author: Berkan Atik
 branding:
